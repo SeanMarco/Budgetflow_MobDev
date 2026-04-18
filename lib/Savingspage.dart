@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-// FIXED: Removed duplicate `final supabase = Supabase.instance.client;`
-// Import supabase from main.dart to avoid duplicate-global-variable warnings.
 import 'main.dart' show BF, supabase;
 import 'AppState.dart';
 
 class SavingsPage extends StatefulWidget {
   const SavingsPage({super.key});
+
   @override
   State<SavingsPage> createState() => _SavingsPageState();
 }
@@ -14,8 +13,7 @@ class SavingsPage extends StatefulWidget {
 class _SavingsPageState extends State<SavingsPage> {
   final currency = NumberFormat.currency(locale: 'en_PH', symbol: '₱');
   bool _isLoading = false;
-
-  AppState get _s => AppStateScope.of(context);
+  late AppState _appState;
 
   String get _userId => supabase.auth.currentUser?.id ?? '';
 
@@ -28,10 +26,24 @@ class _SavingsPageState extends State<SavingsPage> {
   ];
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _appState = AppStateScope.of(context);
+  }
+
+  @override
   void initState() {
     super.initState();
-    // FIXED: Use addPostFrameCallback so context is available before first call
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadSavingsGoals());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _loadSavingsGoals();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
   }
 
   Future<void> _loadSavingsGoals() async {
@@ -44,11 +56,10 @@ class _SavingsPageState extends State<SavingsPage> {
           .eq('user_id', _userId);
 
       if (!mounted) return;
-      _s.savingsGoals.clear();
+      _appState.savingsGoals.clear();
       for (final goal in (response as List)) {
-        _s.savingsGoals.add({
+        _appState.savingsGoals.add({
           'id': goal['id'].toString(),
-          // FIXED: Explicit cast to String for all string fields
           'title': goal['title'] as String,
           'emoji': goal['emoji'] as String? ?? '🎯',
           'target': (goal['target'] as num).toDouble(),
@@ -73,7 +84,6 @@ class _SavingsPageState extends State<SavingsPage> {
         );
       }
     } finally {
-      // FIXED: Guard setState with mounted check
       if (mounted) setState(() => _isLoading = false);
     }
   }
@@ -81,7 +91,7 @@ class _SavingsPageState extends State<SavingsPage> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final goals = _s.savingsGoals;
+    final goals = _appState.savingsGoals;
 
     if (_isLoading) {
       return Scaffold(
@@ -109,7 +119,6 @@ class _SavingsPageState extends State<SavingsPage> {
                   ...goals.asMap().entries.map(
                     (e) => _goalCard(e.value, e.key, isDark),
                   ),
-                  // Bottom padding so FAB doesn't overlap last card
                   const SizedBox(height: 80),
                 ],
               ),
@@ -137,7 +146,6 @@ class _SavingsPageState extends State<SavingsPage> {
     child: FloatingActionButton(
       backgroundColor: Colors.transparent,
       elevation: 0,
-      // FIXED: Pass isDark from build context, not re-read Theme here
       onPressed: () =>
           _showSheet(Theme.of(context).brightness == Brightness.dark),
       child: const Icon(Icons.add_rounded, color: Colors.white, size: 26),
@@ -391,7 +399,6 @@ class _SavingsPageState extends State<SavingsPage> {
                     color: isDark ? Colors.white38 : Colors.black38,
                     size: 20,
                   ),
-                  // FIXED: Explicit type parameter <String> avoids type-inference warning
                   itemBuilder: (_) => [
                     PopupMenuItem<String>(
                       value: 'add',
@@ -526,14 +533,13 @@ class _SavingsPageState extends State<SavingsPage> {
     if (confirmed != true || !mounted) return;
 
     try {
-      // FIXED: Added .eq('user_id', _userId) for RLS safety (matches schema)
       await supabase
           .from('savings_goals')
           .delete()
           .eq('id', int.parse(goal['id'] as String))
           .eq('user_id', _userId);
 
-      _s.deleteGoal(goal['id'] as String);
+      _appState.deleteGoal(goal['id'] as String);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -617,176 +623,207 @@ class _SavingsPageState extends State<SavingsPage> {
     ),
   );
 
-  // ── Add Funds Sheet ─────────────────────────────────────────────────────────
+  // Add Funds Sheet - FIXED VERSION
   void _showAddFundsSheet(Map<String, dynamic> goal, bool isDark) {
-    // FIXED: Controller disposed in finally/pop flow via StatefulBuilder lifecycle
     final ctrl = TextEditingController();
     bool isSaving = false;
+    bool _isSheetActive = true;
+
+    void disposeControllers() {
+      if (_isSheetActive) {
+        _isSheetActive = false;
+        Future.microtask(() {
+          if (!ctrl.hasListeners) {
+            ctrl.dispose();
+          }
+        });
+      }
+    }
 
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => StatefulBuilder(
-        builder: (ctx, setS) {
-          return Container(
-            decoration: BoxDecoration(
-              color: isDark ? BF.darkCard : Colors.white,
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(28),
-              ),
-            ),
-            padding: EdgeInsets.only(
-              left: 24,
-              right: 24,
-              top: 20,
-              // FIXED: Use ctx.viewInsets (the sheet's context) not outer context
-              bottom: MediaQuery.of(ctx).viewInsets.bottom + 28,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _handle(isDark),
-                const SizedBox(height: 20),
-                Row(
-                  children: [
-                    Text(
-                      goal['emoji'] as String? ?? '🎯',
-                      style: const TextStyle(fontSize: 24),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        'Add Funds to ${goal['title']}',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                          fontFamily: 'Poppins',
-                          color: isDark ? Colors.white : Colors.black87,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                _field(
-                  ctrl,
-                  'Amount to add',
-                  isDark,
-                  prefix: '₱ ',
-                  type: TextInputType.number,
-                ),
-                const SizedBox(height: 20),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: BF.accent,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(vertical: 15),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      textStyle: const TextStyle(
-                        fontFamily: 'Poppins',
-                        fontWeight: FontWeight.w600,
-                        fontSize: 15,
-                      ),
-                    ),
-                    onPressed: isSaving
-                        ? null
-                        : () async {
-                            final amt = double.tryParse(ctrl.text.trim()) ?? 0;
-                            if (amt <= 0) {
-                              ScaffoldMessenger.of(ctx).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    'Please enter a valid amount',
-                                    style: TextStyle(fontFamily: 'Poppins'),
-                                  ),
-                                  backgroundColor: BF.red,
-                                ),
-                              );
-                              return;
-                            }
-
-                            setS(() => isSaving = true);
-
-                            try {
-                              final newSaved = (goal['saved'] as double) + amt;
-
-                              await supabase
-                                  .from('savings_goals')
-                                  .update({'saved': newSaved})
-                                  .eq('id', int.parse(goal['id'] as String))
-                                  .eq('user_id', _userId);
-
-                              _s.addFundsToGoal(goal['id'] as String, amt);
-
-                              if (ctx.mounted) {
-                                ScaffoldMessenger.of(ctx).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      'Added ${currency.format(amt)} to ${goal['title']}',
-                                      style: const TextStyle(
-                                        fontFamily: 'Poppins',
-                                      ),
-                                    ),
-                                    backgroundColor: BF.green,
-                                    behavior: SnackBarBehavior.floating,
-                                  ),
-                                );
-                                Navigator.pop(ctx);
-                              }
-                            } catch (e) {
-                              if (ctx.mounted) {
-                                ScaffoldMessenger.of(ctx).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      'Error: $e',
-                                      style: const TextStyle(
-                                        fontFamily: 'Poppins',
-                                      ),
-                                    ),
-                                    backgroundColor: BF.red,
-                                  ),
-                                );
-                              }
-                            } finally {
-                              // FIXED: dispose controller after sheet closes
-                              if (ctx.mounted) {
-                                setS(() => isSaving = false);
-                              } else {
-                                ctrl.dispose();
-                              }
-                            }
-                          },
-                    child: isSaving
-                        ? const SizedBox(
-                            height: 20,
-                            width: 20,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
-                            ),
-                          )
-                        : const Text('Add Funds'),
+      builder: (_) {
+        return StatefulBuilder(
+          builder: (ctx, setS) {
+            return PopScope(
+              canPop: true,
+              onPopInvoked: (didPop) {
+                if (didPop && _isSheetActive) {
+                  disposeControllers();
+                }
+              },
+              child: Container(
+                decoration: BoxDecoration(
+                  color: isDark ? BF.darkCard : Colors.white,
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(28),
                   ),
                 ),
-                const SizedBox(height: 8),
-              ],
-            ),
-          );
-        },
-      ),
-    ).whenComplete(ctrl.dispose);
-    // FIXED: .whenComplete(ctrl.dispose) guarantees TextEditingController
-    // is always disposed when the sheet is dismissed, even on back-swipe.
+                padding: EdgeInsets.only(
+                  left: 24,
+                  right: 24,
+                  top: 20,
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom + 28,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _handle(isDark),
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        Text(
+                          goal['emoji'] as String? ?? '🎯',
+                          style: const TextStyle(fontSize: 24),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Add Funds to ${goal['title']}',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                              fontFamily: 'Poppins',
+                              color: isDark ? Colors.white : Colors.black87,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    _field(
+                      ctrl,
+                      'Amount to add',
+                      isDark,
+                      prefix: '₱ ',
+                      type: TextInputType.number,
+                    ),
+                    const SizedBox(height: 20),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: BF.accent,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(vertical: 15),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          textStyle: const TextStyle(
+                            fontFamily: 'Poppins',
+                            fontWeight: FontWeight.w600,
+                            fontSize: 15,
+                          ),
+                        ),
+                        onPressed: isSaving
+                            ? null
+                            : () async {
+                                final amt =
+                                    double.tryParse(ctrl.text.trim()) ?? 0;
+                                if (amt <= 0) {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Please enter a valid amount',
+                                        style: TextStyle(fontFamily: 'Poppins'),
+                                      ),
+                                      backgroundColor: BF.red,
+                                    ),
+                                  );
+                                  return;
+                                }
+
+                                setS(() => isSaving = true);
+
+                                try {
+                                  final newSaved =
+                                      (goal['saved'] as double) + amt;
+
+                                  await supabase
+                                      .from('savings_goals')
+                                      .update({'saved': newSaved})
+                                      .eq('id', int.parse(goal['id'] as String))
+                                      .eq('user_id', _userId);
+
+                                  // Schedule the update after the current frame
+                                  WidgetsBinding.instance.addPostFrameCallback((
+                                    _,
+                                  ) {
+                                    if (mounted && _appState != null) {
+                                      _appState.addFundsToGoal(
+                                        goal['id'] as String,
+                                        amt,
+                                      );
+                                    }
+                                  });
+
+                                  if (ctx.mounted) {
+                                    ScaffoldMessenger.of(ctx).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          'Added ${currency.format(amt)} to ${goal['title']}',
+                                          style: const TextStyle(
+                                            fontFamily: 'Poppins',
+                                          ),
+                                        ),
+                                        backgroundColor: BF.green,
+                                        behavior: SnackBarBehavior.floating,
+                                      ),
+                                    );
+                                    Navigator.pop(ctx);
+                                  }
+                                } catch (e) {
+                                  if (ctx.mounted) {
+                                    ScaffoldMessenger.of(ctx).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          'Error: $e',
+                                          style: const TextStyle(
+                                            fontFamily: 'Poppins',
+                                          ),
+                                        ),
+                                        backgroundColor: BF.red,
+                                      ),
+                                    );
+                                  }
+                                } finally {
+                                  if (ctx.mounted) {
+                                    setS(() => isSaving = false);
+                                  }
+                                }
+                              },
+                        child: isSaving
+                            ? const SizedBox(
+                                height: 20,
+                                width: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Text('Add Funds'),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    ).whenComplete(() {
+      if (_isSheetActive) {
+        disposeControllers();
+      }
+    });
   }
 
-  // ── New Goal Sheet ──────────────────────────────────────────────────────────
+  // New Goal Sheet - FIXED VERSION
   void _showSheet(bool isDark) {
     final titleCtrl = TextEditingController();
     final targetCtrl = TextEditingController();
@@ -794,6 +831,7 @@ class _SavingsPageState extends State<SavingsPage> {
     String emoji = '🎯';
     DateTime? deadline;
     bool isSaving = false;
+    bool _isSheetActive = true;
 
     const emojis = [
       '🎯',
@@ -810,261 +848,305 @@ class _SavingsPageState extends State<SavingsPage> {
       '🏋️',
     ];
 
-    // FIXED: Dispose all 3 controllers when sheet is dismissed
     void disposeControllers() {
-      titleCtrl.dispose();
-      targetCtrl.dispose();
-      savedCtrl.dispose();
+      if (_isSheetActive) {
+        _isSheetActive = false;
+        Future.microtask(() {
+          if (!titleCtrl.hasListeners) titleCtrl.dispose();
+          if (!targetCtrl.hasListeners) targetCtrl.dispose();
+          if (!savedCtrl.hasListeners) savedCtrl.dispose();
+        });
+      }
     }
 
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => StatefulBuilder(
-        builder: (ctx, setS) {
-          return Container(
-            decoration: BoxDecoration(
-              color: isDark ? BF.darkCard : Colors.white,
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(28),
-              ),
-            ),
-            padding: EdgeInsets.only(
-              left: 24,
-              right: 24,
-              top: 20,
-              bottom: MediaQuery.of(ctx).viewInsets.bottom + 28,
-            ),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _handle(isDark),
-                  const SizedBox(height: 20),
-                  Text(
-                    'New Savings Goal',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w700,
-                      fontFamily: 'Poppins',
-                      color: isDark ? Colors.white : Colors.black87,
-                    ),
+      builder: (_) {
+        return StatefulBuilder(
+          builder: (ctx, setS) {
+            return PopScope(
+              canPop: true,
+              onPopInvoked: (didPop) {
+                if (didPop && _isSheetActive) {
+                  disposeControllers();
+                }
+              },
+              child: Container(
+                decoration: BoxDecoration(
+                  color: isDark ? BF.darkCard : Colors.white,
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(28),
                   ),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    height: 44,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: emojis.length,
-                      itemBuilder: (_, i) => GestureDetector(
-                        onTap: () => setS(() => emoji = emojis[i]),
-                        child: _emojiBtn(emojis[i], emoji == emojis[i], isDark),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  _field(titleCtrl, 'Goal name', isDark),
-                  const SizedBox(height: 12),
-                  _field(
-                    targetCtrl,
-                    'Target amount',
-                    isDark,
-                    prefix: '₱ ',
-                    type: TextInputType.number,
-                  ),
-                  const SizedBox(height: 12),
-                  _field(
-                    savedCtrl,
-                    'Already saved (optional)',
-                    isDark,
-                    prefix: '₱ ',
-                    type: TextInputType.number,
-                  ),
-                  const SizedBox(height: 12),
-                  GestureDetector(
-                    onTap: () async {
-                      final picked = await showDatePicker(
-                        context: ctx,
-                        initialDate: DateTime.now().add(
-                          const Duration(days: 30),
-                        ),
-                        firstDate: DateTime.now(),
-                        lastDate: DateTime.now().add(
-                          const Duration(days: 365 * 10),
-                        ),
-                      );
-                      if (picked != null && ctx.mounted) {
-                        setS(() => deadline = picked);
-                      }
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 14,
-                      ),
-                      decoration: BoxDecoration(
-                        color: isDark ? BF.darkSurface : BF.lightBg,
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: deadline != null
-                              ? BF.accent
-                              : (isDark ? BF.darkBorder : BF.lightBorder),
-                          width: deadline != null ? 1.5 : 1,
+                ),
+                padding: EdgeInsets.only(
+                  left: 24,
+                  right: 24,
+                  top: 20,
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom + 28,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _handle(isDark),
+                      const SizedBox(height: 20),
+                      Text(
+                        'New Savings Goal',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          fontFamily: 'Poppins',
+                          color: isDark ? Colors.white : Colors.black87,
                         ),
                       ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.calendar_today_rounded,
-                            size: 16,
-                            color: deadline != null
-                                ? BF.accent
-                                : (isDark ? Colors.white38 : Colors.black38),
-                          ),
-                          const SizedBox(width: 10),
-                          Text(
-                            deadline != null
-                                ? DateFormat('MMM dd, yyyy').format(deadline!)
-                                : 'Set deadline (optional)',
-                            style: TextStyle(
-                              fontFamily: 'Poppins',
-                              fontSize: 14,
-                              color: deadline != null
-                                  ? (isDark ? Colors.white : Colors.black87)
-                                  : (isDark ? Colors.white38 : Colors.black38),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        height: 44,
+                        child: ListView.builder(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: emojis.length,
+                          itemBuilder: (_, i) => GestureDetector(
+                            onTap: () => setS(() => emoji = emojis[i]),
+                            child: _emojiBtn(
+                              emojis[i],
+                              emoji == emojis[i],
+                              isDark,
                             ),
                           ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: BF.accent,
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(vertical: 15),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        textStyle: const TextStyle(
-                          fontFamily: 'Poppins',
-                          fontWeight: FontWeight.w600,
-                          fontSize: 15,
                         ),
                       ),
-                      onPressed: isSaving
-                          ? null
-                          : () async {
-                              final target =
-                                  double.tryParse(targetCtrl.text.trim()) ?? 0;
-                              final title = titleCtrl.text.trim();
-
-                              if (title.isEmpty || target <= 0) {
-                                ScaffoldMessenger.of(ctx).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      'Please enter a title and valid target amount',
-                                      style: TextStyle(fontFamily: 'Poppins'),
-                                    ),
-                                    backgroundColor: BF.red,
-                                  ),
-                                );
-                                return;
-                              }
-
-                              setS(() => isSaving = true);
-
-                              try {
-                                final saved =
-                                    double.tryParse(savedCtrl.text.trim()) ??
-                                    0.0;
-
-                                final response = await supabase
-                                    .from('savings_goals')
-                                    .insert({
-                                      'user_id': _userId,
-                                      'title': title,
-                                      'emoji': emoji,
-                                      'target': target,
-                                      'saved': saved,
-                                      'deadline': deadline?.toIso8601String(),
-                                    })
-                                    .select();
-
-                                if (!ctx.mounted) return;
-
-                                if ((response as List).isNotEmpty) {
-                                  _s.addGoal({
-                                    'id': response[0]['id'].toString(),
-                                    'title': title,
-                                    'target': target,
-                                    'saved': saved,
-                                    'emoji': emoji,
-                                    'deadline': deadline,
-                                  });
-
-                                  ScaffoldMessenger.of(ctx).showSnackBar(
-                                    const SnackBar(
-                                      content: Text(
-                                        'Goal created successfully',
-                                        style: TextStyle(fontFamily: 'Poppins'),
-                                      ),
-                                      backgroundColor: BF.green,
-                                      behavior: SnackBarBehavior.floating,
-                                    ),
-                                  );
-                                  Navigator.pop(ctx);
-                                }
-                              } catch (e) {
-                                if (ctx.mounted) {
-                                  ScaffoldMessenger.of(ctx).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        'Error: $e',
-                                        style: const TextStyle(
-                                          fontFamily: 'Poppins',
-                                        ),
-                                      ),
-                                      backgroundColor: BF.red,
-                                    ),
-                                  );
-                                }
-                              } finally {
-                                if (ctx.mounted) {
-                                  setS(() => isSaving = false);
-                                }
-                              }
-                            },
-                      child: isSaving
-                          ? const SizedBox(
-                              height: 20,
-                              width: 20,
-                              child: CircularProgressIndicator(
-                                color: Colors.white,
-                                strokeWidth: 2,
+                      const SizedBox(height: 14),
+                      _field(titleCtrl, 'Goal name', isDark),
+                      const SizedBox(height: 12),
+                      _field(
+                        targetCtrl,
+                        'Target amount',
+                        isDark,
+                        prefix: '₱ ',
+                        type: TextInputType.number,
+                      ),
+                      const SizedBox(height: 12),
+                      _field(
+                        savedCtrl,
+                        'Already saved (optional)',
+                        isDark,
+                        prefix: '₱ ',
+                        type: TextInputType.number,
+                      ),
+                      const SizedBox(height: 12),
+                      GestureDetector(
+                        onTap: () async {
+                          final picked = await showDatePicker(
+                            context: ctx,
+                            initialDate: DateTime.now().add(
+                              const Duration(days: 30),
+                            ),
+                            firstDate: DateTime.now(),
+                            lastDate: DateTime.now().add(
+                              const Duration(days: 365 * 10),
+                            ),
+                          );
+                          if (picked != null && ctx.mounted) {
+                            setS(() => deadline = picked);
+                          }
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 14,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isDark ? BF.darkSurface : BF.lightBg,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: deadline != null
+                                  ? BF.accent
+                                  : (isDark ? BF.darkBorder : BF.lightBorder),
+                              width: deadline != null ? 1.5 : 1,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.calendar_today_rounded,
+                                size: 16,
+                                color: deadline != null
+                                    ? BF.accent
+                                    : (isDark
+                                          ? Colors.white38
+                                          : Colors.black38),
                               ),
-                            )
-                          : const Text('Create Goal'),
-                    ),
+                              const SizedBox(width: 10),
+                              Text(
+                                deadline != null
+                                    ? DateFormat(
+                                        'MMM dd, yyyy',
+                                      ).format(deadline!)
+                                    : 'Set deadline (optional)',
+                                style: TextStyle(
+                                  fontFamily: 'Poppins',
+                                  fontSize: 14,
+                                  color: deadline != null
+                                      ? (isDark ? Colors.white : Colors.black87)
+                                      : (isDark
+                                            ? Colors.white38
+                                            : Colors.black38),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: BF.accent,
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            padding: const EdgeInsets.symmetric(vertical: 15),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            textStyle: const TextStyle(
+                              fontFamily: 'Poppins',
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                            ),
+                          ),
+                          onPressed: isSaving
+                              ? null
+                              : () async {
+                                  final target =
+                                      double.tryParse(targetCtrl.text.trim()) ??
+                                      0;
+                                  final title = titleCtrl.text.trim();
+
+                                  if (title.isEmpty || target <= 0) {
+                                    ScaffoldMessenger.of(ctx).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          'Please enter a title and valid target amount',
+                                          style: TextStyle(
+                                            fontFamily: 'Poppins',
+                                          ),
+                                        ),
+                                        backgroundColor: BF.red,
+                                      ),
+                                    );
+                                    return;
+                                  }
+
+                                  setS(() => isSaving = true);
+
+                                  try {
+                                    final saved =
+                                        double.tryParse(
+                                          savedCtrl.text.trim(),
+                                        ) ??
+                                        0.0;
+
+                                    final response = await supabase
+                                        .from('savings_goals')
+                                        .insert({
+                                          'user_id': _userId,
+                                          'title': title,
+                                          'emoji': emoji,
+                                          'target': target,
+                                          'saved': saved,
+                                          'deadline': deadline
+                                              ?.toIso8601String(),
+                                        })
+                                        .select();
+
+                                    if (!ctx.mounted) return;
+
+                                    if ((response as List).isNotEmpty) {
+                                      // Schedule the add after the current frame
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback((_) {
+                                            if (mounted && _appState != null) {
+                                              _appState.addGoal({
+                                                'id': response[0]['id']
+                                                    .toString(),
+                                                'title': title,
+                                                'target': target,
+                                                'saved': saved,
+                                                'emoji': emoji,
+                                                'deadline': deadline,
+                                              });
+                                            }
+                                          });
+
+                                      if (ctx.mounted) {
+                                        ScaffoldMessenger.of(ctx).showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                              'Goal created successfully',
+                                              style: TextStyle(
+                                                fontFamily: 'Poppins',
+                                              ),
+                                            ),
+                                            backgroundColor: BF.green,
+                                            behavior: SnackBarBehavior.floating,
+                                          ),
+                                        );
+                                        Navigator.pop(ctx);
+                                      }
+                                    }
+                                  } catch (e) {
+                                    if (ctx.mounted) {
+                                      ScaffoldMessenger.of(ctx).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            'Error: $e',
+                                            style: const TextStyle(
+                                              fontFamily: 'Poppins',
+                                            ),
+                                          ),
+                                          backgroundColor: BF.red,
+                                        ),
+                                      );
+                                    }
+                                  } finally {
+                                    if (ctx.mounted) {
+                                      setS(() => isSaving = false);
+                                    }
+                                  }
+                                },
+                          child: isSaving
+                              ? const SizedBox(
+                                  height: 20,
+                                  width: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Create Goal'),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
                   ),
-                  const SizedBox(height: 8),
-                ],
+                ),
               ),
-            ),
-          );
-        },
-      ),
-    ).whenComplete(disposeControllers);
+            );
+          },
+        );
+      },
+    ).whenComplete(() {
+      if (_isSheetActive) {
+        disposeControllers();
+      }
+    });
   }
 
-  // ── Shared small widgets ────────────────────────────────────────────────────
-
+  // Shared small widgets
   Widget _handle(bool isDark) => Center(
     child: Container(
       width: 40,
