@@ -1,13 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-import 'main.dart' show BF;
+import 'main.dart' show BF, supabase;
 import 'AppState.dart';
-
-final supabase = Supabase.instance.client;
 
 class RecurringPage extends StatefulWidget {
   const RecurringPage({super.key});
+
   @override
   State<RecurringPage> createState() => _RecurringPageState();
 }
@@ -15,18 +13,33 @@ class RecurringPage extends StatefulWidget {
 class _RecurringPageState extends State<RecurringPage> {
   final currency = NumberFormat.currency(locale: 'en_PH', symbol: '₱');
   bool _isLoading = false;
-
-  AppState get _s => AppStateScope.of(context);
+  late AppState _appState;
 
   String get _userId => supabase.auth.currentUser?.id ?? '';
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _appState = AppStateScope.of(context);
+  }
+
+  @override
   void initState() {
     super.initState();
-    _loadRecurringTransactions();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _loadRecurringTransactions();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
   }
 
   Future<void> _loadRecurringTransactions() async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
     try {
       final response = await supabase
@@ -36,17 +49,18 @@ class _RecurringPageState extends State<RecurringPage> {
           .eq('is_active', true)
           .order('next_date', ascending: true);
 
-      _s.recurringTransactions.clear();
-      for (var item in response) {
-        _s.recurringTransactions.add({
+      if (!mounted) return;
+      _appState.recurringTransactions.clear();
+      for (final item in (response as List)) {
+        _appState.recurringTransactions.add({
           'id': item['id'].toString(),
-          'title': item['title'],
+          'title': item['title'] as String,
           'amount': (item['amount'] as num).toDouble(),
           'isIncome': item['is_income'] as bool,
-          'frequency': item['frequency'],
-          'emoji': item['emoji'] ?? '🔄',
-          'nextDate': DateTime.parse(item['next_date']),
-          'category': item['category'] ?? 'General',
+          'frequency': item['frequency'] as String,
+          'emoji': item['emoji'] as String? ?? '🔄',
+          'nextDate': DateTime.parse(item['next_date'] as String),
+          'category': item['category'] as String? ?? 'General',
           'isActive': item['is_active'] as bool,
         });
       }
@@ -55,8 +69,12 @@ class _RecurringPageState extends State<RecurringPage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error loading recurring transactions: $e'),
+            content: Text(
+              'Failed to load recurring transactions.',
+              style: const TextStyle(fontFamily: 'Poppins'),
+            ),
             backgroundColor: BF.red,
+            behavior: SnackBarBehavior.floating,
           ),
         );
       }
@@ -73,12 +91,15 @@ class _RecurringPageState extends State<RecurringPage> {
           .eq('id', int.parse(id))
           .eq('user_id', _userId);
 
-      _s.deleteRecurring(id);
+      _appState.deleteRecurring(id);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Recurring transaction deleted'),
+            content: Text(
+              'Recurring transaction removed',
+              style: TextStyle(fontFamily: 'Poppins'),
+            ),
             backgroundColor: BF.green,
             behavior: SnackBarBehavior.floating,
           ),
@@ -88,7 +109,10 @@ class _RecurringPageState extends State<RecurringPage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error deleting: $e'),
+            content: Text(
+              'Error removing: $e',
+              style: const TextStyle(fontFamily: 'Poppins'),
+            ),
             backgroundColor: BF.red,
           ),
         );
@@ -99,7 +123,7 @@ class _RecurringPageState extends State<RecurringPage> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final items = _s.recurringTransactions;
+    final items = _appState.recurringTransactions;
 
     if (_isLoading) {
       return Scaffold(
@@ -122,9 +146,10 @@ class _RecurringPageState extends State<RecurringPage> {
                 children: [
                   _upcomingBanner(isDark),
                   const SizedBox(height: 14),
-                  _sectionLabel("Active Schedules", isDark),
+                  _sectionLabel('Active Schedules', isDark),
                   const SizedBox(height: 12),
                   ...items.map((r) => _card(r, isDark)),
+                  const SizedBox(height: 80),
                 ],
               ),
             ),
@@ -151,7 +176,8 @@ class _RecurringPageState extends State<RecurringPage> {
     child: FloatingActionButton(
       backgroundColor: Colors.transparent,
       elevation: 0,
-      onPressed: () => _showSheet(isDark),
+      onPressed: () =>
+          _showSheet(Theme.of(context).brightness == Brightness.dark),
       child: const Icon(Icons.add_rounded, color: Colors.white, size: 26),
     ),
   );
@@ -161,7 +187,7 @@ class _RecurringPageState extends State<RecurringPage> {
     elevation: 0,
     centerTitle: true,
     title: Text(
-      "Recurring Transactions",
+      'Recurring Transactions',
       style: TextStyle(
         fontFamily: 'Poppins',
         fontWeight: FontWeight.w700,
@@ -189,7 +215,7 @@ class _RecurringPageState extends State<RecurringPage> {
   );
 
   Widget _upcomingBanner(bool isDark) {
-    final upcoming = _s.recurringTransactions.where((r) {
+    final upcoming = _appState.recurringTransactions.where((r) {
       final next = r['nextDate'] as DateTime;
       return next.difference(DateTime.now()).inDays <= 3;
     }).toList();
@@ -223,7 +249,7 @@ class _RecurringPageState extends State<RecurringPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  "${upcoming.length} upcoming payment${upcoming.length > 1 ? 's' : ''}",
+                  '${upcoming.length} upcoming payment${upcoming.length > 1 ? 's' : ''}',
                   style: const TextStyle(
                     fontFamily: 'Poppins',
                     fontSize: 13,
@@ -232,7 +258,7 @@ class _RecurringPageState extends State<RecurringPage> {
                   ),
                 ),
                 Text(
-                  "Due within the next 3 days",
+                  'Due within the next 3 days',
                   style: TextStyle(
                     fontFamily: 'Poppins',
                     fontSize: 11,
@@ -256,6 +282,50 @@ class _RecurringPageState extends State<RecurringPage> {
     return Dismissible(
       key: Key(r['id'] as String),
       direction: DismissDirection.endToStart,
+      confirmDismiss: (_) async {
+        return await showDialog<bool>(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                backgroundColor: isDark ? BF.darkCard : Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                title: Text(
+                  'Remove Recurring?',
+                  style: TextStyle(
+                    fontFamily: 'Poppins',
+                    fontWeight: FontWeight.w700,
+                    color: isDark ? Colors.white : Colors.black87,
+                  ),
+                ),
+                content: Text(
+                  'Stop "${r['title']}" from recurring?',
+                  style: TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 13,
+                    color: isDark ? Colors.white54 : Colors.black54,
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text(
+                      'Cancel',
+                      style: TextStyle(fontFamily: 'Poppins', color: BF.accent),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, true),
+                    child: const Text(
+                      'Remove',
+                      style: TextStyle(fontFamily: 'Poppins', color: BF.red),
+                    ),
+                  ),
+                ],
+              ),
+            ) ??
+            false;
+      },
       onDismissed: (_) => _deleteRecurringTransaction(r['id'] as String),
       background: Container(
         margin: const EdgeInsets.only(bottom: 12),
@@ -300,7 +370,7 @@ class _RecurringPageState extends State<RecurringPage> {
               ),
               child: Center(
                 child: Text(
-                  r['emoji'] ?? '🔄',
+                  r['emoji'] as String? ?? '🔄',
                   style: const TextStyle(fontSize: 22),
                 ),
               ),
@@ -311,7 +381,7 @@ class _RecurringPageState extends State<RecurringPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    r['title'],
+                    r['title'] as String,
                     style: TextStyle(
                       fontWeight: FontWeight.w600,
                       fontFamily: 'Poppins',
@@ -332,7 +402,7 @@ class _RecurringPageState extends State<RecurringPage> {
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Text(
-                          r['frequency'],
+                          r['frequency'] as String,
                           style: const TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: 10,
@@ -359,10 +429,10 @@ class _RecurringPageState extends State<RecurringPage> {
                         ),
                         child: Text(
                           daysUntil == 0
-                              ? "Due today"
+                              ? 'Due today'
                               : daysUntil < 0
-                              ? "Overdue"
-                              : "In $daysUntil day${daysUntil == 1 ? '' : 's'}",
+                              ? 'Overdue'
+                              : 'In $daysUntil day${daysUntil == 1 ? '' : 's'}',
                           style: TextStyle(
                             fontSize: 10,
                             fontFamily: 'Poppins',
@@ -384,7 +454,7 @@ class _RecurringPageState extends State<RecurringPage> {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  "${isIncome ? '+' : '-'}${currency.format(r['amount'])}",
+                  '${isIncome ? '+' : '-'}${currency.format(r['amount'])}',
                   style: TextStyle(
                     fontWeight: FontWeight.w700,
                     fontFamily: 'Poppins',
@@ -424,7 +494,7 @@ class _RecurringPageState extends State<RecurringPage> {
         ),
         const SizedBox(height: 16),
         Text(
-          "No Recurring Transactions",
+          'No Recurring Transactions',
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w700,
@@ -434,7 +504,7 @@ class _RecurringPageState extends State<RecurringPage> {
         ),
         const SizedBox(height: 8),
         Text(
-          "Automate your bills & subscriptions",
+          'Automate your bills & subscriptions',
           style: TextStyle(
             fontFamily: 'Poppins',
             color: isDark ? Colors.white38 : Colors.black38,
@@ -444,6 +514,7 @@ class _RecurringPageState extends State<RecurringPage> {
     ),
   );
 
+  // New Recurring Sheet - FIXED VERSION
   void _showSheet(bool isDark) {
     final titleCtrl = TextEditingController();
     final amountCtrl = TextEditingController();
@@ -453,8 +524,9 @@ class _RecurringPageState extends State<RecurringPage> {
     DateTime nextDate = DateTime.now().add(const Duration(days: 30));
     String category = 'General';
     bool isSaving = false;
+    bool _isSheetActive = true;
 
-    final emojis = [
+    const emojis = [
       '🔄',
       '💡',
       '📱',
@@ -468,8 +540,8 @@ class _RecurringPageState extends State<RecurringPage> {
       '🎮',
       '✈️',
     ];
-    final freqs = ['Daily', 'Weekly', 'Monthly', 'Yearly'];
-    final categories = [
+    const freqs = ['Daily', 'Weekly', 'Monthly', 'Yearly'];
+    const categories = [
       'General',
       'Bills & Utilities',
       'Subscriptions',
@@ -480,347 +552,419 @@ class _RecurringPageState extends State<RecurringPage> {
       'Insurance',
     ];
 
-    showModalBottomSheet(
+    void disposeControllers() {
+      if (_isSheetActive) {
+        _isSheetActive = false;
+        Future.microtask(() {
+          if (!titleCtrl.hasListeners) {
+            titleCtrl.dispose();
+          }
+          if (!amountCtrl.hasListeners) {
+            amountCtrl.dispose();
+          }
+        });
+      }
+    }
+
+    showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => StatefulBuilder(
-        builder: (ctx, setS) => Container(
-          decoration: BoxDecoration(
-            color: isDark ? BF.darkCard : Colors.white,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-          ),
-          padding: EdgeInsets.only(
-            left: 24,
-            right: 24,
-            top: 20,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 28,
-          ),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _handle(isDark),
-                const SizedBox(height: 20),
-                Text(
-                  "New Recurring Transaction",
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    fontFamily: 'Poppins',
-                    color: isDark ? Colors.white : Colors.black87,
+      builder: (_) {
+        return StatefulBuilder(
+          builder: (ctx, setS) {
+            return PopScope(
+              canPop: true,
+              onPopInvoked: (didPop) {
+                if (didPop && _isSheetActive) {
+                  disposeControllers();
+                }
+              },
+              child: Container(
+                decoration: BoxDecoration(
+                  color: isDark ? BF.darkCard : Colors.white,
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(28),
                   ),
                 ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  height: 44,
-                  child: ListView.builder(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: emojis.length,
-                    itemBuilder: (_, i) => GestureDetector(
-                      onTap: () => setS(() => emoji = emojis[i]),
-                      child: _emojiBtn(emojis[i], emoji == emojis[i], isDark),
-                    ),
-                  ),
+                padding: EdgeInsets.only(
+                  left: 24,
+                  right: 24,
+                  top: 20,
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom + 28,
                 ),
-                const SizedBox(height: 14),
-                // Income/Expense toggle
-                Container(
-                  height: 50,
-                  decoration: BoxDecoration(
-                    color: isDark ? BF.darkSurface : BF.lightBg,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Row(
-                    children: [false, true].map((v) {
-                      final sel = isIncome == v;
-                      final label = v ? "Income" : "Expense";
-                      return Expanded(
-                        child: GestureDetector(
-                          onTap: () => setS(() => isIncome = v),
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 200),
-                            margin: const EdgeInsets.all(4),
-                            decoration: BoxDecoration(
-                              color: sel
-                                  ? (v ? BF.green : BF.red)
-                                  : Colors.transparent,
-                              borderRadius: BorderRadius.circular(10),
-                              boxShadow: sel
-                                  ? [
-                                      BoxShadow(
-                                        color: (v ? BF.green : BF.red)
-                                            .withOpacity(0.3),
-                                        blurRadius: 8,
-                                        offset: const Offset(0, 3),
-                                      ),
-                                    ]
-                                  : [],
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _handle(isDark),
+                      const SizedBox(height: 20),
+                      Text(
+                        'New Recurring Transaction',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          fontFamily: 'Poppins',
+                          color: isDark ? Colors.white : Colors.black87,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        height: 44,
+                        child: ListView.builder(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: emojis.length,
+                          itemBuilder: (_, i) => GestureDetector(
+                            onTap: () => setS(() => emoji = emojis[i]),
+                            child: _emojiBtn(
+                              emojis[i],
+                              emoji == emojis[i],
+                              isDark,
                             ),
-                            alignment: Alignment.center,
-                            child: Text(
-                              label,
-                              style: TextStyle(
-                                fontFamily: 'Poppins',
-                                fontWeight: FontWeight.w600,
-                                fontSize: 14,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      // Income / Expense toggle
+                      Container(
+                        height: 50,
+                        decoration: BoxDecoration(
+                          color: isDark ? BF.darkSurface : BF.lightBg,
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Row(
+                          children: [false, true].map((v) {
+                            final sel = isIncome == v;
+                            final label = v ? 'Income' : 'Expense';
+                            return Expanded(
+                              child: GestureDetector(
+                                onTap: () => setS(() => isIncome = v),
+                                child: AnimatedContainer(
+                                  duration: const Duration(milliseconds: 200),
+                                  margin: const EdgeInsets.all(4),
+                                  decoration: BoxDecoration(
+                                    color: sel
+                                        ? (v ? BF.green : BF.red)
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(10),
+                                    boxShadow: sel
+                                        ? [
+                                            BoxShadow(
+                                              color: (v ? BF.green : BF.red)
+                                                  .withOpacity(0.3),
+                                              blurRadius: 8,
+                                              offset: const Offset(0, 3),
+                                            ),
+                                          ]
+                                        : [],
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: Text(
+                                    label,
+                                    style: TextStyle(
+                                      fontFamily: 'Poppins',
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 14,
+                                      color: sel
+                                          ? Colors.white
+                                          : (isDark
+                                                ? Colors.white54
+                                                : Colors.black45),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      _field(titleCtrl, 'Title', isDark),
+                      const SizedBox(height: 12),
+                      _field(
+                        amountCtrl,
+                        'Amount',
+                        isDark,
+                        prefix: '₱ ',
+                        type: TextInputType.number,
+                      ),
+                      const SizedBox(height: 12),
+                      // Category dropdown
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: isDark ? BF.darkSurface : BF.lightBg,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: isDark ? BF.darkBorder : BF.lightBorder,
+                          ),
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<String>(
+                            value: category,
+                            isExpanded: true,
+                            dropdownColor: isDark ? BF.darkCard : Colors.white,
+                            style: TextStyle(
+                              fontFamily: 'Poppins',
+                              fontSize: 14,
+                              color: isDark ? Colors.white : Colors.black87,
+                            ),
+                            items: categories.map((c) {
+                              return DropdownMenuItem<String>(
+                                value: c,
+                                child: Text(c),
+                              );
+                            }).toList(),
+                            onChanged: (String? v) {
+                              if (v != null) setS(() => category = v);
+                            },
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      // Frequency chips
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: freqs.map((f) {
+                          final sel = frequency == f;
+                          return GestureDetector(
+                            onTap: () => setS(() => frequency = f),
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 200),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 8,
+                              ),
+                              decoration: BoxDecoration(
                                 color: sel
-                                    ? Colors.white
-                                    : (isDark
-                                          ? Colors.white54
-                                          : Colors.black45),
+                                    ? BF.accent
+                                    : (isDark ? BF.darkSurface : BF.lightBg),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: sel
+                                      ? BF.accent
+                                      : (isDark
+                                            ? BF.darkBorder
+                                            : BF.lightBorder),
+                                ),
+                              ),
+                              child: Text(
+                                f,
+                                style: TextStyle(
+                                  fontFamily: 'Poppins',
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: sel
+                                      ? Colors.white
+                                      : (isDark
+                                            ? Colors.white54
+                                            : Colors.black45),
+                                ),
                               ),
                             ),
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                _field(titleCtrl, "Title", isDark),
-                const SizedBox(height: 12),
-                _field(
-                  amountCtrl,
-                  "Amount",
-                  isDark,
-                  prefix: "₱ ",
-                  type: TextInputType.number,
-                ),
-                const SizedBox(height: 12),
-                // Category dropdown
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  decoration: BoxDecoration(
-                    color: isDark ? BF.darkSurface : BF.lightBg,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: isDark ? BF.darkBorder : BF.lightBorder,
-                    ),
-                  ),
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      value: category,
-                      isExpanded: true,
-                      dropdownColor: isDark ? BF.darkCard : Colors.white,
-                      style: TextStyle(
-                        fontFamily: 'Poppins',
-                        fontSize: 14,
-                        color: isDark ? Colors.white : Colors.black87,
+                          );
+                        }).toList(),
                       ),
-                      items: categories.map((c) {
-                        return DropdownMenuItem<String>(
-                          value: c,
-                          child: Text(c),
-                        );
-                      }).toList(),
-                      onChanged: (v) {
-                        if (v != null) setS(() => category = v);
-                      },
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: freqs.map((f) {
-                    final sel = frequency == f;
-                    return GestureDetector(
-                      onTap: () => setS(() => frequency = f),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: sel
-                              ? BF.accent
-                              : (isDark ? BF.darkSurface : BF.lightBg),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: sel
-                                ? BF.accent
-                                : (isDark ? BF.darkBorder : BF.lightBorder),
-                          ),
-                        ),
-                        child: Text(
-                          f,
-                          style: TextStyle(
-                            fontFamily: 'Poppins',
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: sel
-                                ? Colors.white
-                                : (isDark ? Colors.white54 : Colors.black45),
-                          ),
-                        ),
-                      ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 12),
-                // Next date picker
-                GestureDetector(
-                  onTap: () async {
-                    final picked = await showDatePicker(
-                      context: ctx,
-                      initialDate: nextDate,
-                      firstDate: DateTime.now(),
-                      lastDate: DateTime.now().add(
-                        const Duration(days: 365 * 5),
-                      ),
-                    );
-                    if (picked != null) setS(() => nextDate = picked);
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 14,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isDark ? BF.darkSurface : BF.lightBg,
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(
-                        color: isDark ? BF.darkBorder : BF.lightBorder,
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.calendar_today_rounded,
-                          size: 16,
-                          color: isDark ? Colors.white38 : Colors.black38,
-                        ),
-                        const SizedBox(width: 10),
-                        Text(
-                          "Next: ${DateFormat('MMM dd, yyyy').format(nextDate)}",
-                          style: TextStyle(
-                            fontFamily: 'Poppins',
-                            fontSize: 14,
-                            color: isDark ? Colors.white : Colors.black87,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: BF.accent,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(vertical: 15),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      textStyle: const TextStyle(
-                        fontFamily: 'Poppins',
-                        fontWeight: FontWeight.w600,
-                        fontSize: 15,
-                      ),
-                    ),
-                    onPressed: isSaving
-                        ? null
-                        : () async {
-                            final amount =
-                                double.tryParse(amountCtrl.text) ?? 0;
-                            final title = titleCtrl.text.trim();
-
-                            if (title.isEmpty || amount <= 0) {
-                              ScaffoldMessenger.of(ctx).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    'Please enter title and valid amount',
-                                  ),
-                                  backgroundColor: BF.red,
-                                ),
-                              );
-                              return;
-                            }
-
-                            setS(() => isSaving = true);
-
-                            try {
-                              final response = await supabase
-                                  .from('recurring_transactions')
-                                  .insert({
-                                    'user_id': _userId,
-                                    'title': title,
-                                    'amount': amount,
-                                    'is_income': isIncome,
-                                    'frequency': frequency,
-                                    'emoji': emoji,
-                                    'next_date': nextDate.toIso8601String(),
-                                    'category': category,
-                                    'is_active': true,
-                                  })
-                                  .select();
-
-                              if (response.isNotEmpty) {
-                                _s.addRecurring({
-                                  'id': response[0]['id'].toString(),
-                                  'title': title,
-                                  'amount': amount,
-                                  'isIncome': isIncome,
-                                  'frequency': frequency,
-                                  'emoji': emoji,
-                                  'nextDate': nextDate,
-                                  'category': category,
-                                  'isActive': true,
-                                });
-
-                                if (ctx.mounted) {
-                                  ScaffoldMessenger.of(ctx).showSnackBar(
-                                    const SnackBar(
-                                      content: Text(
-                                        'Recurring transaction added',
-                                      ),
-                                      backgroundColor: BF.green,
-                                      behavior: SnackBarBehavior.floating,
-                                    ),
-                                  );
-                                  Navigator.pop(ctx);
-                                }
-                              }
-                            } catch (e) {
-                              if (ctx.mounted) {
-                                ScaffoldMessenger.of(ctx).showSnackBar(
-                                  SnackBar(
-                                    content: Text('Error: $e'),
-                                    backgroundColor: BF.red,
-                                  ),
-                                );
-                              }
-                            } finally {
-                              if (ctx.mounted) setS(() => isSaving = false);
-                            }
-                          },
-                    child: isSaving
-                        ? const SizedBox(
-                            height: 20,
-                            width: 20,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
+                      const SizedBox(height: 12),
+                      // Next date picker
+                      GestureDetector(
+                        onTap: () async {
+                          final picked = await showDatePicker(
+                            context: ctx,
+                            initialDate: nextDate,
+                            firstDate: DateTime.now(),
+                            lastDate: DateTime.now().add(
+                              const Duration(days: 365 * 5),
                             ),
-                          )
-                        : const Text("Add Recurring"),
+                          );
+                          if (picked != null && ctx.mounted) {
+                            setS(() => nextDate = picked);
+                          }
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 14,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isDark ? BF.darkSurface : BF.lightBg,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: isDark ? BF.darkBorder : BF.lightBorder,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.calendar_today_rounded,
+                                size: 16,
+                                color: isDark ? Colors.white38 : Colors.black38,
+                              ),
+                              const SizedBox(width: 10),
+                              Text(
+                                'Next: ${DateFormat('MMM dd, yyyy').format(nextDate)}',
+                                style: TextStyle(
+                                  fontFamily: 'Poppins',
+                                  fontSize: 14,
+                                  color: isDark ? Colors.white : Colors.black87,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: BF.accent,
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            padding: const EdgeInsets.symmetric(vertical: 15),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            textStyle: const TextStyle(
+                              fontFamily: 'Poppins',
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                            ),
+                          ),
+                          onPressed: isSaving
+                              ? null
+                              : () async {
+                                  final amount =
+                                      double.tryParse(amountCtrl.text.trim()) ??
+                                      0;
+                                  final title = titleCtrl.text.trim();
+
+                                  if (title.isEmpty || amount <= 0) {
+                                    ScaffoldMessenger.of(ctx).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          'Please enter a title and valid amount',
+                                          style: TextStyle(
+                                            fontFamily: 'Poppins',
+                                          ),
+                                        ),
+                                        backgroundColor: BF.red,
+                                      ),
+                                    );
+                                    return;
+                                  }
+
+                                  setS(() => isSaving = true);
+
+                                  try {
+                                    final response = await supabase
+                                        .from('recurring_transactions')
+                                        .insert({
+                                          'user_id': _userId,
+                                          'title': title,
+                                          'amount': amount,
+                                          'is_income': isIncome,
+                                          'frequency': frequency,
+                                          'emoji': emoji,
+                                          'next_date': nextDate
+                                              .toIso8601String(),
+                                          'category': category,
+                                          'is_active': true,
+                                        })
+                                        .select();
+
+                                    if (!ctx.mounted) return;
+
+                                    if ((response as List).isNotEmpty) {
+                                      // Use addPostFrameCallback to update after sheet closes
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback((_) {
+                                            if (mounted && _appState != null) {
+                                              _appState.addRecurring({
+                                                'id': response[0]['id']
+                                                    .toString(),
+                                                'title': title,
+                                                'amount': amount,
+                                                'isIncome': isIncome,
+                                                'frequency': frequency,
+                                                'emoji': emoji,
+                                                'nextDate': nextDate,
+                                                'category': category,
+                                                'isActive': true,
+                                              });
+                                            }
+                                          });
+
+                                      // Close the sheet first
+                                      Navigator.pop(ctx);
+
+                                      // Show snackbar after sheet is closed
+                                      if (ctx.mounted) {
+                                        ScaffoldMessenger.of(ctx).showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                              'Recurring transaction added',
+                                              style: TextStyle(
+                                                fontFamily: 'Poppins',
+                                              ),
+                                            ),
+                                            backgroundColor: BF.green,
+                                            behavior: SnackBarBehavior.floating,
+                                          ),
+                                        );
+                                      }
+                                    }
+                                  } catch (e) {
+                                    if (ctx.mounted) {
+                                      ScaffoldMessenger.of(ctx).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            'Error: $e',
+                                            style: const TextStyle(
+                                              fontFamily: 'Poppins',
+                                            ),
+                                          ),
+                                          backgroundColor: BF.red,
+                                        ),
+                                      );
+                                    }
+                                  } finally {
+                                    if (ctx.mounted) {
+                                      setS(() => isSaving = false);
+                                    }
+                                  }
+                                },
+                          child: isSaving
+                              ? const SizedBox(
+                                  height: 20,
+                                  width: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Add Recurring'),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
                   ),
                 ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
+              ),
+            );
+          },
+        );
+      },
+    ).whenComplete(() {
+      if (_isSheetActive) {
+        disposeControllers();
+      }
+    });
   }
 
+  // Shared small widgets
   Widget _handle(bool isDark) => Center(
     child: Container(
       width: 40,

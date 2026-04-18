@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:pie_chart/pie_chart.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-import 'main.dart' show BF;
+// FIXED: Removed duplicate `final supabase = Supabase.instance.client;`
+// Import supabase from main.dart to avoid duplicate-global-variable warnings.
+import 'main.dart' show BF, supabase;
 import 'AppState.dart';
-
-final supabase = Supabase.instance.client;
 
 class ReportsPage extends StatefulWidget {
   const ReportsPage({super.key});
@@ -38,9 +37,9 @@ class _ReportsPageState extends State<ReportsPage>
   }
 
   Future<void> _refreshData() async {
+    if (!mounted) return;
     setState(() => _isRefreshing = true);
     try {
-      // Refresh all data from Supabase
       final accountsResponse = await supabase
           .from('accounts')
           .select()
@@ -62,55 +61,59 @@ class _ReportsPageState extends State<ReportsPage>
           .select()
           .eq('user_id', _userId);
 
-      // Clear and reload accounts
+      if (!mounted) return;
+
+      // ── Accounts ──────────────────────────────────────────────────────────
       _s.accounts.clear();
-      for (var acc in accountsResponse) {
+      for (final acc in (accountsResponse as List)) {
         _s.accounts.add({
           'id': acc['id'].toString(),
-          'name': acc['name'],
-          'type': acc['type'],
-          'emoji': acc['emoji'],
+          'name': acc['name'] as String,
+          'type': acc['type'] as String,
+          'emoji': acc['emoji'] as String? ?? '💰',
           'balance': (acc['balance'] as num).toDouble(),
-          'color': acc['color'],
+          // FIXED: consistent String type for color
+          'color': acc['color'] as String? ?? '#0EA974',
         });
       }
 
-      // Clear and reload transactions
+      // ── Transactions ──────────────────────────────────────────────────────
       _s.transactions.clear();
-      for (var tx in transactionsResponse) {
+      for (final tx in (transactionsResponse as List)) {
         _s.transactions.add({
           'id': tx['id'].toString(),
-          'title': tx['title'],
+          'title': tx['title'] as String,
           'amount': (tx['amount'] as num).toDouble(),
           'isIncome': tx['is_income'] as bool,
-          'category': tx['category'],
-          'note': tx['note'] ?? '',
-          'date': DateTime.parse(tx['date']),
+          'category': tx['category'] as String? ?? 'General',
+          'note': tx['note'] as String? ?? '',
+          'date': DateTime.parse(tx['date'] as String),
           'accountId': tx['account_id'].toString(),
         });
       }
 
-      // Clear and reload budgets
+      // ── Budgets ───────────────────────────────────────────────────────────
       _s.budgets.clear();
-      for (var bud in budgetsResponse) {
+      for (final bud in (budgetsResponse as List)) {
         _s.budgets.add({
           'id': bud['id'].toString(),
-          'category': bud['category'],
+          'category': bud['category'] as String,
+          // FIXED: column name is `budget_limit`
           'limit': (bud['budget_limit'] as num).toDouble(),
         });
       }
 
-      // Clear and reload savings goals
+      // ── Savings Goals ─────────────────────────────────────────────────────
       _s.savingsGoals.clear();
-      for (var goal in savingsResponse) {
+      for (final goal in (savingsResponse as List)) {
         _s.savingsGoals.add({
           'id': goal['id'].toString(),
-          'title': goal['title'],
-          'emoji': goal['emoji'] ?? '🎯',
+          'title': goal['title'] as String,
+          'emoji': goal['emoji'] as String? ?? '🎯',
           'target': (goal['target'] as num).toDouble(),
           'saved': (goal['saved'] as num).toDouble(),
           'deadline': goal['deadline'] != null
-              ? DateTime.parse(goal['deadline'])
+              ? DateTime.parse(goal['deadline'] as String)
               : null,
         });
       }
@@ -119,12 +122,17 @@ class _ReportsPageState extends State<ReportsPage>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error refreshing data: $e'),
+            content: Text(
+              'Failed to refresh data.',
+              style: const TextStyle(fontFamily: 'Poppins'),
+            ),
             backgroundColor: BF.red,
+            behavior: SnackBarBehavior.floating,
           ),
         );
       }
     } finally {
+      // FIXED: Guard setState with mounted check
       if (mounted) setState(() => _isRefreshing = false);
     }
   }
@@ -136,12 +144,15 @@ class _ReportsPageState extends State<ReportsPage>
       switch (_period) {
         case 'This Week':
           final startOfWeek = now.subtract(Duration(days: now.weekday - 1));
-          return d.isAfter(startOfWeek.subtract(const Duration(days: 1)));
+          return !d.isBefore(
+            DateTime(startOfWeek.year, startOfWeek.month, startOfWeek.day),
+          );
         case 'This Month':
           return d.month == now.month && d.year == now.year;
         case 'Last Month':
-          final lastMonth = DateTime(now.year, now.month - 1);
-          return d.month == lastMonth.month && d.year == lastMonth.year;
+          // FIXED: Correctly handle January → December of previous year
+          final lastMonthDate = DateTime(now.year, now.month - 1);
+          return d.month == lastMonthDate.month && d.year == lastMonthDate.year;
         case 'All Time':
           return true;
         default:
@@ -157,12 +168,12 @@ class _ReportsPageState extends State<ReportsPage>
     return Scaffold(
       backgroundColor: isDark ? BF.darkBg : BF.lightBg,
       appBar: _appBar(isDark),
-      body: RefreshIndicator(
-        color: BF.accent,
-        onRefresh: _refreshData,
-        child: _isRefreshing
-            ? const Center(child: CircularProgressIndicator(color: BF.accent))
-            : Column(
+      body: _isRefreshing
+          ? const Center(child: CircularProgressIndicator(color: BF.accent))
+          : RefreshIndicator(
+              color: BF.accent,
+              onRefresh: _refreshData,
+              child: Column(
                 children: [
                   _periodRow(isDark),
                   const SizedBox(height: 12),
@@ -179,7 +190,7 @@ class _ReportsPageState extends State<ReportsPage>
                   ),
                 ],
               ),
-      ),
+            ),
     );
   }
 
@@ -188,7 +199,7 @@ class _ReportsPageState extends State<ReportsPage>
     elevation: 0,
     centerTitle: true,
     title: Text(
-      "Reports & Analytics",
+      'Reports & Analytics',
       style: TextStyle(
         fontFamily: 'Poppins',
         fontWeight: FontWeight.w700,
@@ -287,40 +298,46 @@ class _ReportsPageState extends State<ReportsPage>
         indicatorSize: TabBarIndicatorSize.tab,
         dividerColor: Colors.transparent,
         tabs: const [
-          Tab(text: "Overview"),
-          Tab(text: "Categories"),
-          Tab(text: "Trends"),
+          Tab(text: 'Overview'),
+          Tab(text: 'Categories'),
+          Tab(text: 'Trends'),
         ],
       ),
     );
   }
 
+  // ── Overview Tab ────────────────────────────────────────────────────────────
   Widget _overviewTab(bool isDark) {
     final txs = _filtered;
     final income = txs
-        .where((t) => t['isIncome'])
+        .where((t) => t['isIncome'] as bool)
         .fold(0.0, (s, t) => s + (t['amount'] as double));
     final expense = txs
-        .where((t) => !t['isIncome'])
+        .where((t) => !(t['isIncome'] as bool))
         .fold(0.0, (s, t) => s + (t['amount'] as double));
     final net = income - expense;
 
     if (txs.isEmpty) {
-      return _emptyData(isDark, "No transactions for this period");
+      return _emptyData(isDark, 'No transactions for this period');
     }
+
+    // FIXED: PieChart dataMap must not be empty — guard with if checks
+    final Map<String, double> pieData = {};
+    if (income > 0) pieData['Income'] = income;
+    if (expense > 0) pieData['Expense'] = expense;
 
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
         Row(
           children: [
-            Expanded(child: _statCard("Income", income, BF.green, isDark)),
+            Expanded(child: _statCard('Income', income, BF.green, isDark)),
             const SizedBox(width: 10),
-            Expanded(child: _statCard("Expense", expense, BF.red, isDark)),
+            Expanded(child: _statCard('Expense', expense, BF.red, isDark)),
             const SizedBox(width: 10),
             Expanded(
               child: _statCard(
-                "Net",
+                'Net',
                 net,
                 net >= 0 ? BF.green : BF.red,
                 isDark,
@@ -329,14 +346,11 @@ class _ReportsPageState extends State<ReportsPage>
           ],
         ),
         const SizedBox(height: 16),
-        if (income > 0 || expense > 0)
+        if (pieData.isNotEmpty)
           _infoCard(
             isDark,
             child: PieChart(
-              dataMap: {
-                if (income > 0) "Income": income,
-                if (expense > 0) "Expense": expense,
-              },
+              dataMap: pieData,
               chartType: ChartType.ring,
               ringStrokeWidth: 24,
               chartRadius: 130,
@@ -360,7 +374,7 @@ class _ReportsPageState extends State<ReportsPage>
             ),
           )
         else
-          _emptyData(isDark, "No income or expense data"),
+          _emptyData(isDark, 'No income or expense data'),
         const SizedBox(height: 14),
         _infoCard(
           isDark,
@@ -368,7 +382,7 @@ class _ReportsPageState extends State<ReportsPage>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                "Summary",
+                'Summary',
                 style: TextStyle(
                   fontWeight: FontWeight.w700,
                   fontFamily: 'Poppins',
@@ -377,24 +391,24 @@ class _ReportsPageState extends State<ReportsPage>
                 ),
               ),
               const SizedBox(height: 16),
-              _summaryRow("Total Transactions", "${txs.length}", isDark),
+              _summaryRow('Total Transactions', '${txs.length}', isDark),
               _divider(isDark),
               _summaryRow(
-                "Total Income",
+                'Total Income',
                 currency.format(income),
                 isDark,
                 vc: BF.green,
               ),
               _divider(isDark),
               _summaryRow(
-                "Total Expenses",
+                'Total Expenses',
                 currency.format(expense),
                 isDark,
                 vc: BF.red,
               ),
               _divider(isDark),
               _summaryRow(
-                "Net Savings",
+                'Net Savings',
                 currency.format(net),
                 isDark,
                 vc: net >= 0 ? BF.green : BF.red,
@@ -402,8 +416,8 @@ class _ReportsPageState extends State<ReportsPage>
               if (income > 0) ...[
                 _divider(isDark),
                 _summaryRow(
-                  "Savings Rate",
-                  "${((income - expense) / income * 100).toStringAsFixed(1)}%",
+                  'Savings Rate',
+                  '${((income - expense) / income * 100).toStringAsFixed(1)}%',
                   isDark,
                   vc: net >= 0 ? BF.green : BF.red,
                 ),
@@ -415,29 +429,31 @@ class _ReportsPageState extends State<ReportsPage>
     );
   }
 
+  // ── Categories Tab ──────────────────────────────────────────────────────────
   Widget _categoriesTab(bool isDark) {
-    final txs = _filtered.where((t) => !t['isIncome']).toList();
+    final txs = _filtered.where((t) => !(t['isIncome'] as bool)).toList();
     final Map<String, double> catMap = {};
-    for (var tx in txs) {
+    for (final tx in txs) {
       final c = tx['category'] as String;
       catMap[c] = (catMap[c] ?? 0) + (tx['amount'] as double);
     }
     final total = catMap.values.fold(0.0, (a, b) => a + b);
     final sorted = catMap.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
-    final colors = [
+
+    const colors = [
       BF.accent,
       BF.red,
       BF.green,
       BF.amber,
-      const Color(0xFF3B82F6),
-      const Color(0xFFEC4899),
-      const Color(0xFF8B5CF6),
-      const Color(0xFF14B8A6),
+      Color(0xFF3B82F6),
+      Color(0xFFEC4899),
+      Color(0xFF8B5CF6),
+      Color(0xFF14B8A6),
     ];
 
     if (sorted.isEmpty) {
-      return _emptyData(isDark, "No expense data for this period");
+      return _emptyData(isDark, 'No expense data for this period');
     }
 
     return ListView(
@@ -450,7 +466,7 @@ class _ReportsPageState extends State<ReportsPage>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  "Spending Distribution",
+                  'Spending Distribution',
                   style: TextStyle(
                     fontWeight: FontWeight.w700,
                     fontFamily: 'Poppins',
@@ -460,7 +476,9 @@ class _ReportsPageState extends State<ReportsPage>
                 ),
                 const SizedBox(height: 16),
                 PieChart(
-                  dataMap: {for (var e in sorted) e.key: e.value},
+                  // FIXED: Use Map.fromEntries so dataMap is always non-empty
+                  // when this block renders (guarded by `if (total > 0)`)
+                  dataMap: Map.fromEntries(sorted),
                   chartType: ChartType.ring,
                   ringStrokeWidth: 20,
                   chartRadius: 120,
@@ -486,7 +504,7 @@ class _ReportsPageState extends State<ReportsPage>
           ),
         const SizedBox(height: 14),
         Text(
-          "Category Breakdown",
+          'Category Breakdown',
           style: TextStyle(
             fontWeight: FontWeight.w700,
             fontFamily: 'Poppins',
@@ -504,17 +522,19 @@ class _ReportsPageState extends State<ReportsPage>
     );
   }
 
+  // ── Trends Tab ──────────────────────────────────────────────────────────────
   Widget _trendsTab(bool isDark) {
     final txs = _filtered;
-    final Map<String, double> incByDay = {}, expByDay = {};
+    final Map<String, double> incByDay = {};
+    final Map<String, double> expByDay = {};
 
     final sortedTxs = List<Map<String, dynamic>>.from(
       txs,
     )..sort((a, b) => (a['date'] as DateTime).compareTo(b['date'] as DateTime));
 
-    for (var tx in sortedTxs) {
+    for (final tx in sortedTxs) {
       final key = DateFormat('MM/dd').format(tx['date'] as DateTime);
-      if (tx['isIncome']) {
+      if (tx['isIncome'] as bool) {
         incByDay[key] = (incByDay[key] ?? 0) + (tx['amount'] as double);
       } else {
         expByDay[key] = (expByDay[key] ?? 0) + (tx['amount'] as double);
@@ -522,12 +542,12 @@ class _ReportsPageState extends State<ReportsPage>
     }
 
     if (incByDay.isEmpty && expByDay.isEmpty) {
-      return _emptyData(isDark, "No transaction data for this period");
+      return _emptyData(isDark, 'No transaction data for this period');
     }
 
-    final keys = {...incByDay.keys, ...expByDay.keys}.toList()..sort();
+    final keys = ({...incByDay.keys, ...expByDay.keys}).toList()..sort();
     final maxVal = keys
-        .expand((k) => [incByDay[k] ?? 0, expByDay[k] ?? 0])
+        .expand((k) => [incByDay[k] ?? 0.0, expByDay[k] ?? 0.0])
         .fold(0.0, (a, b) => a > b ? a : b);
 
     return ListView(
@@ -539,7 +559,7 @@ class _ReportsPageState extends State<ReportsPage>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                "Daily Cash Flow",
+                'Daily Cash Flow',
                 style: TextStyle(
                   fontWeight: FontWeight.w700,
                   fontFamily: 'Poppins',
@@ -553,8 +573,8 @@ class _ReportsPageState extends State<ReportsPage>
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: keys.map((key) {
-                    final inc = incByDay[key] ?? 0;
-                    final exp = expByDay[key] ?? 0;
+                    final inc = incByDay[key] ?? 0.0;
+                    final exp = expByDay[key] ?? 0.0;
                     return Expanded(
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 3),
@@ -605,9 +625,9 @@ class _ReportsPageState extends State<ReportsPage>
               const SizedBox(height: 14),
               Row(
                 children: [
-                  _legend(BF.green, "Income", isDark),
+                  _legend(BF.green, 'Income', isDark),
                   const SizedBox(width: 20),
-                  _legend(BF.red, "Expense", isDark),
+                  _legend(BF.red, 'Expense', isDark),
                 ],
               ),
             ],
@@ -620,7 +640,7 @@ class _ReportsPageState extends State<ReportsPage>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                "Key Insights",
+                'Key Insights',
                 style: TextStyle(
                   fontWeight: FontWeight.w700,
                   fontFamily: 'Poppins',
@@ -631,7 +651,7 @@ class _ReportsPageState extends State<ReportsPage>
               const SizedBox(height: 12),
               _insightRow(
                 Icons.trending_up_rounded,
-                "Highest Income Day",
+                'Highest Income Day',
                 _getHighestDay(incByDay),
                 BF.green,
                 isDark,
@@ -639,7 +659,7 @@ class _ReportsPageState extends State<ReportsPage>
               const SizedBox(height: 8),
               _insightRow(
                 Icons.trending_down_rounded,
-                "Highest Expense Day",
+                'Highest Expense Day',
                 _getHighestDay(expByDay),
                 BF.red,
                 isDark,
@@ -647,7 +667,7 @@ class _ReportsPageState extends State<ReportsPage>
               const SizedBox(height: 8),
               _insightRow(
                 Icons.savings_rounded,
-                "Best Saving Day",
+                'Best Saving Day',
                 _getBestSavingDay(incByDay, expByDay),
                 BF.amber,
                 isDark,
@@ -659,29 +679,33 @@ class _ReportsPageState extends State<ReportsPage>
     );
   }
 
+  // ── Insight helpers ─────────────────────────────────────────────────────────
+
   String _getHighestDay(Map<String, double> data) {
-    if (data.isEmpty) return "No data";
+    if (data.isEmpty) return 'No data';
     final entry = data.entries.reduce((a, b) => a.value > b.value ? a : b);
-    return "${entry.key} (${currency.format(entry.value)})";
+    return '${entry.key} (${currency.format(entry.value)})';
   }
 
   String _getBestSavingDay(Map<String, double> inc, Map<String, double> exp) {
-    if (inc.isEmpty && exp.isEmpty) return "No data";
     final allKeys = {...inc.keys, ...exp.keys};
-    String bestDay = "";
-    double bestNet = -double.infinity;
+    if (allKeys.isEmpty) return 'No data';
+    String bestDay = '';
+    double bestNet = double.negativeInfinity;
 
-    for (var key in allKeys) {
-      final net = (inc[key] ?? 0) - (exp[key] ?? 0);
+    for (final key in allKeys) {
+      final net = (inc[key] ?? 0.0) - (exp[key] ?? 0.0);
       if (net > bestNet) {
         bestNet = net;
         bestDay = key;
       }
     }
     return bestDay.isNotEmpty
-        ? "$bestDay (${currency.format(bestNet)})"
-        : "No data";
+        ? '$bestDay (${currency.format(bestNet)})'
+        : 'No data';
   }
+
+  // ── Shared small widgets ────────────────────────────────────────────────────
 
   Widget _insightRow(
     IconData icon,
@@ -744,9 +768,9 @@ class _ReportsPageState extends State<ReportsPage>
               borderRadius: BorderRadius.circular(8),
             ),
             child: Icon(
-              label == "Income"
+              label == 'Income'
                   ? Icons.arrow_downward_rounded
-                  : label == "Expense"
+                  : label == 'Expense'
                   ? Icons.arrow_upward_rounded
                   : Icons.balance_rounded,
               size: 14,
@@ -834,15 +858,19 @@ class _ReportsPageState extends State<ReportsPage>
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              cat,
-              style: TextStyle(
-                fontWeight: FontWeight.w600,
-                fontFamily: 'Poppins',
-                fontSize: 14,
-                color: isDark ? Colors.white : Colors.black87,
+            Expanded(
+              child: Text(
+                cat,
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontFamily: 'Poppins',
+                  fontSize: 14,
+                  color: isDark ? Colors.white : Colors.black87,
+                ),
+                overflow: TextOverflow.ellipsis,
               ),
             ),
+            const SizedBox(width: 8),
             Text(
               currency.format(amount),
               style: TextStyle(
@@ -860,13 +888,13 @@ class _ReportsPageState extends State<ReportsPage>
           child: LinearProgressIndicator(
             value: pct,
             backgroundColor: color.withOpacity(0.1),
-            valueColor: AlwaysStoppedAnimation(color),
+            valueColor: AlwaysStoppedAnimation<Color>(color),
             minHeight: 7,
           ),
         ),
         const SizedBox(height: 6),
         Text(
-          "${(pct * 100).toStringAsFixed(1)}% of expenses",
+          '${(pct * 100).toStringAsFixed(1)}% of expenses',
           style: TextStyle(
             fontSize: 11,
             fontFamily: 'Poppins',

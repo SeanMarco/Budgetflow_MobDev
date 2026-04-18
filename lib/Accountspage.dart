@@ -1,10 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-import 'main.dart' show BF;
+import 'main.dart' show BF, supabase;
 import 'AppState.dart';
-
-final supabase = Supabase.instance.client;
 
 class AccountsPage extends StatefulWidget {
   const AccountsPage({super.key});
@@ -16,6 +13,7 @@ class AccountsPage extends StatefulWidget {
 class _AccountsPageState extends State<AccountsPage> {
   final currency = NumberFormat.currency(locale: 'en_PH', symbol: '₱');
   bool loading = false;
+  late AppState _appState;
 
   final _accountColors = [
     BF.green,
@@ -26,29 +24,62 @@ class _AccountsPageState extends State<AccountsPage> {
     const Color(0xFF8B5CF6),
   ];
 
-  AppState get _s => AppStateScope.of(context);
-
   String get _userId => supabase.auth.currentUser?.id ?? '';
 
-  // Convert Color to hex string for Supabase
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _appState = AppStateScope.of(context);
+  }
+
   String _colorToHex(Color c) =>
       '#${c.red.toRadixString(16).padLeft(2, '0')}'
       '${c.green.toRadixString(16).padLeft(2, '0')}'
       '${c.blue.toRadixString(16).padLeft(2, '0')}';
 
-  // Convert hex string to Color
-  Color _hexToColor(String hex) {
-    final hexColor = hex.replaceFirst('#', '');
-    return Color(int.parse('FF$hexColor', radix: 16));
+  Color _parseColor(dynamic raw, Color fallback) {
+    if (raw is Color) return raw;
+    if (raw is String) {
+      try {
+        final hex = raw.replaceFirst('#', '');
+        return Color(int.parse('FF$hex', radix: 16));
+      } catch (_) {}
+    }
+    return fallback;
+  }
+
+  Future<void> _refreshAccounts() async {
+    try {
+      final response = await supabase
+          .from('accounts')
+          .select()
+          .eq('user_id', _userId);
+
+      if (!mounted) return;
+      _appState.accounts.clear();
+      for (final acc in (response as List)) {
+        _appState.accounts.add({
+          'id': acc['id'].toString(),
+          'name': acc['name'] as String,
+          'type': acc['type'] as String,
+          'emoji': acc['emoji'] as String? ?? '💰',
+          'balance': (acc['balance'] as num).toDouble(),
+          'color': acc['color'] as String? ?? '#0EA974',
+        });
+      }
+      if (mounted) setState(() {});
+    } catch (e) {
+      debugPrint('Error refreshing accounts: $e');
+    }
   }
 
   Future<void> _deleteAccount(String accountId) async {
-    // Check if any transactions use this account
-    final hasTransactions = _s.transactions.any(
+    final hasTransactions = _appState.transactions.any(
       (tx) => tx['accountId'].toString() == accountId,
     );
 
     if (hasTransactions) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
@@ -62,46 +93,40 @@ class _AccountsPageState extends State<AccountsPage> {
       return;
     }
 
-    // Confirm delete
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: Theme.of(context).brightness == Brightness.dark
-            ? BF.darkCard
-            : Colors.white,
+        backgroundColor: isDark ? BF.darkCard : Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: Text(
-          "Delete Account?",
+          'Delete Account?',
           style: TextStyle(
             fontFamily: 'Poppins',
             fontWeight: FontWeight.w700,
-            color: Theme.of(context).brightness == Brightness.dark
-                ? Colors.white
-                : Colors.black87,
+            color: isDark ? Colors.white : Colors.black87,
           ),
         ),
         content: Text(
-          "Are you sure you want to delete this account? This cannot be undone.",
+          'Are you sure you want to delete this account? This cannot be undone.',
           style: TextStyle(
             fontFamily: 'Poppins',
             fontSize: 13,
-            color: Theme.of(context).brightness == Brightness.dark
-                ? Colors.white54
-                : Colors.black54,
+            color: isDark ? Colors.white54 : Colors.black54,
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
             child: const Text(
-              "Cancel",
+              'Cancel',
               style: TextStyle(fontFamily: 'Poppins', color: BF.accent),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text(
-              "Delete",
+              'Delete',
               style: TextStyle(fontFamily: 'Poppins', color: BF.red),
             ),
           ),
@@ -109,40 +134,45 @@ class _AccountsPageState extends State<AccountsPage> {
       ),
     );
 
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
 
     try {
-      // Delete from Supabase
+      final accountIdInt = int.tryParse(accountId);
+      if (accountIdInt == null) throw Exception('Invalid account ID');
+
       await supabase
           .from('accounts')
           .delete()
-          .eq('id', int.parse(accountId))
+          .eq('id', accountIdInt)
           .eq('user_id', _userId);
 
-      // Delete from local state
-      _s.deleteAccount(accountId);
+      _appState.deleteAccount(accountId);
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Account deleted successfully',
-            style: TextStyle(fontFamily: 'Poppins'),
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Account deleted successfully',
+              style: TextStyle(fontFamily: 'Poppins'),
+            ),
+            backgroundColor: BF.green,
+            behavior: SnackBarBehavior.floating,
           ),
-          backgroundColor: BF.green,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Error deleting account: $e',
-            style: const TextStyle(fontFamily: 'Poppins'),
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Error deleting account: $e',
+              style: const TextStyle(fontFamily: 'Poppins'),
+            ),
+            backgroundColor: BF.red,
+            behavior: SnackBarBehavior.floating,
           ),
-          backgroundColor: BF.red,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+        );
+      }
     }
   }
 
@@ -154,42 +184,20 @@ class _AccountsPageState extends State<AccountsPage> {
       appBar: _appBar(isDark),
       body: RefreshIndicator(
         color: BF.accent,
-        onRefresh: () async {
-          // Refresh accounts from Supabase
-          try {
-            final response = await supabase
-                .from('accounts')
-                .select()
-                .eq('user_id', _userId);
-
-            _s.accounts.clear();
-            for (var acc in response) {
-              _s.accounts.add({
-                'id': acc['id'].toString(),
-                'name': acc['name'],
-                'type': acc['type'],
-                'emoji': acc['emoji'],
-                'balance': (acc['balance'] as num).toDouble(),
-                'color': acc['color'],
-              });
-            }
-          } catch (e) {
-            debugPrint('Error refreshing accounts: $e');
-          }
-        },
+        onRefresh: _refreshAccounts,
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
             _totalCard(isDark),
             const SizedBox(height: 24),
-            _sectionLabel("Your Accounts", isDark),
+            _sectionLabel('Your Accounts', isDark),
             const SizedBox(height: 12),
-            ..._s.accounts.asMap().entries.map(
+            ..._appState.accounts.asMap().entries.map(
               (e) => _accountCard(e.value, e.key, isDark),
             ),
             const SizedBox(height: 10),
             _addBtn(isDark),
-            if (_s.accounts.length >= 2) ...[
+            if (_appState.accounts.length >= 2) ...[
               const SizedBox(height: 12),
               _transferBtn(isDark),
             ],
@@ -205,7 +213,7 @@ class _AccountsPageState extends State<AccountsPage> {
     elevation: 0,
     centerTitle: true,
     title: Text(
-      "Accounts & Wallets",
+      'Accounts & Wallets',
       style: TextStyle(
         fontFamily: 'Poppins',
         fontWeight: FontWeight.w700,
@@ -257,7 +265,7 @@ class _AccountsPageState extends State<AccountsPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  "Net Worth",
+                  'Net Worth',
                   style: TextStyle(
                     color: Colors.white.withOpacity(0.6),
                     fontFamily: 'Poppins',
@@ -266,7 +274,7 @@ class _AccountsPageState extends State<AccountsPage> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  currency.format(_s.totalBalance),
+                  currency.format(_appState.totalBalance),
                   style: const TextStyle(
                     fontSize: 34,
                     color: Colors.white,
@@ -277,7 +285,7 @@ class _AccountsPageState extends State<AccountsPage> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  "${_s.accounts.length} account${_s.accounts.length == 1 ? '' : 's'}",
+                  '${_appState.accounts.length} account${_appState.accounts.length == 1 ? '' : 's'}',
                   style: TextStyle(
                     color: Colors.white.withOpacity(0.55),
                     fontFamily: 'Poppins',
@@ -306,15 +314,13 @@ class _AccountsPageState extends State<AccountsPage> {
   }
 
   Widget _accountCard(Map<String, dynamic> account, int index, bool isDark) {
-    final color = account['color'] is Color
-        ? account['color'] as Color
-        : (account['color'] != null
-              ? _hexToColor(account['color'].toString())
-              : _accountColors[index % _accountColors.length]);
+    final color = _parseColor(
+      account['color'],
+      _accountColors[index % _accountColors.length],
+    );
     final balance = account['balance'] as double;
 
-    // Check if account has transactions
-    final hasTransactions = _s.transactions.any(
+    final hasTransactions = _appState.transactions.any(
       (tx) => tx['accountId'].toString() == account['id'].toString(),
     );
 
@@ -333,7 +339,7 @@ class _AccountsPageState extends State<AccountsPage> {
             ),
             child: Center(
               child: Text(
-                account['emoji'] ?? '💰',
+                account['emoji'] as String? ?? '💰',
                 style: const TextStyle(fontSize: 24),
               ),
             ),
@@ -344,7 +350,7 @@ class _AccountsPageState extends State<AccountsPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  account['name'],
+                  account['name'] as String,
                   style: TextStyle(
                     fontWeight: FontWeight.w600,
                     fontFamily: 'Poppins',
@@ -363,7 +369,7 @@ class _AccountsPageState extends State<AccountsPage> {
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
-                    account['type'],
+                    account['type'] as String,
                     style: TextStyle(
                       fontSize: 11,
                       fontFamily: 'Poppins',
@@ -421,13 +427,13 @@ class _AccountsPageState extends State<AccountsPage> {
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: BF.accent.withOpacity(0.2), width: 1.5),
       ),
-      child: Row(
+      child: const Row(
         mainAxisAlignment: MainAxisAlignment.center,
-        children: const [
+        children: [
           Icon(Icons.add_circle_outline_rounded, color: BF.accent, size: 20),
           SizedBox(width: 8),
           Text(
-            "Add New Account",
+            'Add New Account',
             style: TextStyle(
               fontFamily: 'Poppins',
               fontWeight: FontWeight.w600,
@@ -460,7 +466,7 @@ class _AccountsPageState extends State<AccountsPage> {
       onPressed: () => _showTransferSheet(isDark),
       icon: const Icon(Icons.swap_horiz_rounded, size: 18),
       label: const Text(
-        "Transfer Between Accounts",
+        'Transfer Between Accounts',
         style: TextStyle(
           fontFamily: 'Poppins',
           fontWeight: FontWeight.w600,
@@ -483,484 +489,684 @@ class _AccountsPageState extends State<AccountsPage> {
     String type = 'Bank';
     String emoji = '🏦';
     Color color = _accountColors[0];
-    final types = ['Cash', 'Bank', 'E-Wallet', 'Credit Card', 'Savings'];
-    final emojis = ['🏦', '💵', '📱', '💳', '🏧', '💰', '🪙', '💎'];
+    const types = ['Cash', 'Bank', 'E-Wallet', 'Credit Card', 'Savings'];
+    const emojis = ['🏦', '💵', '📱', '💳', '🏧', '💰', '🪙', '💎'];
     bool isSaving = false;
+    bool _isSheetActive = true;
+
+    void disposeControllers() {
+      if (_isSheetActive) {
+        _isSheetActive = false;
+        Future.microtask(() {
+          if (!nameCtrl.hasListeners) nameCtrl.dispose();
+          if (!balanceCtrl.hasListeners) balanceCtrl.dispose();
+        });
+      }
+    }
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => StatefulBuilder(
-        builder: (ctx, setS) => Container(
-          decoration: BoxDecoration(
-            color: isDark ? BF.darkCard : Colors.white,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-          ),
-          padding: EdgeInsets.only(
-            left: 24,
-            right: 24,
-            top: 20,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 28,
-          ),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _handle(isDark),
-                const SizedBox(height: 20),
-                Text(
-                  "Add Account",
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    fontFamily: 'Poppins',
-                    color: isDark ? Colors.white : Colors.black87,
+      builder: (_) {
+        return StatefulBuilder(
+          builder: (ctx, setS) {
+            return PopScope(
+              canPop: true,
+              onPopInvoked: (didPop) {
+                if (didPop && _isSheetActive) {
+                  disposeControllers();
+                }
+              },
+              child: Container(
+                decoration: BoxDecoration(
+                  color: isDark ? BF.darkCard : Colors.white,
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(28),
                   ),
                 ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  height: 44,
-                  child: ListView.builder(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: emojis.length,
-                    itemBuilder: (_, i) => GestureDetector(
-                      onTap: () => setS(() => emoji = emojis[i]),
-                      child: _emojiBtn(emojis[i], emoji == emojis[i], isDark),
-                    ),
-                  ),
+                padding: EdgeInsets.only(
+                  left: 24,
+                  right: 24,
+                  top: 20,
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom + 28,
                 ),
-                const SizedBox(height: 14),
-                _field(nameCtrl, "Account name", isDark),
-                const SizedBox(height: 12),
-                _field(
-                  balanceCtrl,
-                  "Initial balance",
-                  isDark,
-                  prefix: "₱ ",
-                  type: TextInputType.number,
-                ),
-                const SizedBox(height: 14),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: types.map((t) {
-                    final sel = type == t;
-                    return GestureDetector(
-                      onTap: () => setS(() => type = t),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: sel
-                              ? BF.accent
-                              : (isDark ? BF.darkSurface : BF.lightBg),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: sel
-                                ? BF.accent
-                                : (isDark ? BF.darkBorder : BF.lightBorder),
-                          ),
-                        ),
-                        child: Text(
-                          t,
-                          style: TextStyle(
-                            fontFamily: 'Poppins',
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: sel
-                                ? Colors.white
-                                : (isDark ? Colors.white54 : Colors.black45),
-                          ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _handle(isDark),
+                      const SizedBox(height: 20),
+                      Text(
+                        'Add Account',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          fontFamily: 'Poppins',
+                          color: isDark ? Colors.white : Colors.black87,
                         ),
                       ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 14),
-                Row(
-                  children: _accountColors.map((c) {
-                    return GestureDetector(
-                      onTap: () => setS(() => color = c),
-                      child: Container(
-                        width: 34,
-                        height: 34,
-                        margin: const EdgeInsets.only(right: 8),
-                        decoration: BoxDecoration(
-                          color: c,
-                          shape: BoxShape.circle,
-                          border: color == c
-                              ? Border.all(
-                                  color: isDark ? Colors.white : Colors.black,
-                                  width: 2.5,
-                                )
-                              : null,
-                          boxShadow: color == c
-                              ? [
-                                  BoxShadow(
-                                    color: c.withOpacity(0.4),
-                                    blurRadius: 8,
-                                    offset: const Offset(0, 3),
-                                  ),
-                                ]
-                              : [],
-                        ),
-                      ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 20),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: BF.accent,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(vertical: 15),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      textStyle: const TextStyle(
-                        fontFamily: 'Poppins',
-                        fontWeight: FontWeight.w600,
-                        fontSize: 15,
-                      ),
-                    ),
-                    onPressed: isSaving
-                        ? null
-                        : () async {
-                            if (nameCtrl.text.trim().isEmpty) {
-                              ScaffoldMessenger.of(ctx).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Please enter an account name'),
-                                  backgroundColor: BF.red,
-                                ),
-                              );
-                              return;
-                            }
-                            setS(() => isSaving = true);
-
-                            final balance =
-                                double.tryParse(balanceCtrl.text) ?? 0.0;
-                            final colorHex = _colorToHex(color);
-
-                            try {
-                              // Save to Supabase
-                              final response =
-                                  await supabase.from('accounts').insert({
-                                    'user_id': _userId,
-                                    'name': nameCtrl.text.trim(),
-                                    'type': type,
-                                    'emoji': emoji,
-                                    'balance': balance,
-                                    'color': colorHex,
-                                  }).select();
-
-                              if (response.isNotEmpty) {
-                                // Add to local state
-                                _s.addAccount({
-                                  'id': response[0]['id'].toString(),
-                                  'name': nameCtrl.text.trim(),
-                                  'type': type,
-                                  'emoji': emoji,
-                                  'balance': balance,
-                                  'color': color,
-                                });
-
-                                if (ctx.mounted) Navigator.pop(ctx);
-
-                                ScaffoldMessenger.of(ctx).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('Account added successfully'),
-                                    backgroundColor: BF.green,
-                                    behavior: SnackBarBehavior.floating,
-                                  ),
-                                );
-                              }
-                            } catch (e) {
-                              if (ctx.mounted) {
-                                ScaffoldMessenger.of(ctx).showSnackBar(
-                                  SnackBar(
-                                    content: Text('Error: $e'),
-                                    backgroundColor: BF.red,
-                                  ),
-                                );
-                              }
-                            } finally {
-                              if (ctx.mounted) setS(() => isSaving = false);
-                            }
-                          },
-                    child: isSaving
-                        ? const SizedBox(
-                            height: 20,
-                            width: 20,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        height: 44,
+                        child: ListView.builder(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: emojis.length,
+                          itemBuilder: (_, i) => GestureDetector(
+                            onTap: () => setS(() => emoji = emojis[i]),
+                            child: _emojiBtn(
+                              emojis[i],
+                              emoji == emojis[i],
+                              isDark,
                             ),
-                          )
-                        : const Text("Add Account"),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      _field(nameCtrl, 'Account name', isDark),
+                      const SizedBox(height: 12),
+                      _field(
+                        balanceCtrl,
+                        'Initial balance',
+                        isDark,
+                        prefix: '₱ ',
+                        type: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: types.map((t) {
+                          final sel = type == t;
+                          return GestureDetector(
+                            onTap: () => setS(() => type = t),
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 200),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 8,
+                              ),
+                              decoration: BoxDecoration(
+                                color: sel
+                                    ? BF.accent
+                                    : (isDark ? BF.darkSurface : BF.lightBg),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: sel
+                                      ? BF.accent
+                                      : (isDark
+                                            ? BF.darkBorder
+                                            : BF.lightBorder),
+                                ),
+                              ),
+                              child: Text(
+                                t,
+                                style: TextStyle(
+                                  fontFamily: 'Poppins',
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: sel
+                                      ? Colors.white
+                                      : (isDark
+                                            ? Colors.white54
+                                            : Colors.black45),
+                                ),
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: _accountColors.map((c) {
+                          return GestureDetector(
+                            onTap: () => setS(() => color = c),
+                            child: Container(
+                              width: 34,
+                              height: 34,
+                              margin: const EdgeInsets.only(right: 8),
+                              decoration: BoxDecoration(
+                                color: c,
+                                shape: BoxShape.circle,
+                                border: color == c
+                                    ? Border.all(
+                                        color: isDark
+                                            ? Colors.white
+                                            : Colors.black,
+                                        width: 2.5,
+                                      )
+                                    : null,
+                                boxShadow: color == c
+                                    ? [
+                                        BoxShadow(
+                                          color: c.withOpacity(0.4),
+                                          blurRadius: 8,
+                                          offset: const Offset(0, 3),
+                                        ),
+                                      ]
+                                    : [],
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                      const SizedBox(height: 20),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: BF.accent,
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            padding: const EdgeInsets.symmetric(vertical: 15),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            textStyle: const TextStyle(
+                              fontFamily: 'Poppins',
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                            ),
+                          ),
+                          onPressed: isSaving
+                              ? null
+                              : () async {
+                                  final name = nameCtrl.text.trim();
+                                  if (name.isEmpty) {
+                                    ScaffoldMessenger.of(ctx).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          'Please enter an account name',
+                                        ),
+                                        backgroundColor: BF.red,
+                                      ),
+                                    );
+                                    return;
+                                  }
+                                  final balance =
+                                      double.tryParse(
+                                        balanceCtrl.text.trim(),
+                                      ) ??
+                                      0.0;
+                                  final colorHex = _colorToHex(color);
+
+                                  setS(() => isSaving = true);
+
+                                  try {
+                                    final response =
+                                        await supabase.from('accounts').insert({
+                                          'user_id': _userId,
+                                          'name': name,
+                                          'type': type,
+                                          'emoji': emoji,
+                                          'balance': balance,
+                                          'color': colorHex,
+                                        }).select();
+
+                                    if (!ctx.mounted) return;
+                                    if ((response as List).isNotEmpty) {
+                                      final newAccountId = response[0]['id']
+                                          .toString();
+
+                                      _appState.addAccount({
+                                        'id': newAccountId,
+                                        'name': name,
+                                        'type': type,
+                                        'emoji': emoji,
+                                        'balance': balance,
+                                        'color': colorHex,
+                                      });
+
+                                      // ADD INITIAL BALANCE TRANSACTION
+                                      if (balance > 0) {
+                                        final now = DateTime.now()
+                                            .toIso8601String();
+                                        final accountIdInt = int.tryParse(
+                                          newAccountId,
+                                        );
+
+                                        if (accountIdInt != null) {
+                                          await supabase
+                                              .from('transactions')
+                                              .insert({
+                                                'user_id': _userId,
+                                                'title':
+                                                    'Initial Balance: $name',
+                                                'amount': balance,
+                                                'is_income': true,
+                                                'category': 'Savings',
+                                                'account_id': accountIdInt,
+                                                'note':
+                                                    'Initial account balance',
+                                                'date': now,
+                                              });
+
+                                          // Refresh transactions
+                                          final transactionsResponse =
+                                              await supabase
+                                                  .from('transactions')
+                                                  .select()
+                                                  .eq('user_id', _userId)
+                                                  .order(
+                                                    'date',
+                                                    ascending: false,
+                                                  );
+
+                                          if (ctx.mounted &&
+                                              (transactionsResponse as List)
+                                                  .isNotEmpty) {
+                                            _appState.transactions.clear();
+                                            for (final tx
+                                                in transactionsResponse) {
+                                              _appState.transactions.add({
+                                                'id': tx['id'].toString(),
+                                                'title': tx['title'] as String,
+                                                'amount': (tx['amount'] as num)
+                                                    .toDouble(),
+                                                'isIncome':
+                                                    tx['is_income'] as bool,
+                                                'category':
+                                                    tx['category'] as String? ??
+                                                    'General',
+                                                'note':
+                                                    tx['note'] as String? ?? '',
+                                                'date': DateTime.parse(
+                                                  tx['date'] as String,
+                                                ),
+                                                'accountId': tx['account_id']
+                                                    .toString(),
+                                              });
+                                            }
+                                          }
+                                        }
+                                      }
+
+                                      Navigator.pop(ctx);
+                                      ScaffoldMessenger.of(ctx).showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'Account added successfully',
+                                          ),
+                                          backgroundColor: BF.green,
+                                          behavior: SnackBarBehavior.floating,
+                                        ),
+                                      );
+                                      if (mounted) setState(() {});
+                                    }
+                                  } catch (e) {
+                                    if (ctx.mounted) {
+                                      ScaffoldMessenger.of(ctx).showSnackBar(
+                                        SnackBar(
+                                          content: Text('Error: $e'),
+                                          backgroundColor: BF.red,
+                                        ),
+                                      );
+                                    }
+                                  } finally {
+                                    if (ctx.mounted) {
+                                      setS(() => isSaving = false);
+                                    }
+                                  }
+                                },
+                          child: isSaving
+                              ? const SizedBox(
+                                  height: 20,
+                                  width: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Add Account'),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
+              ),
+            );
+          },
+        );
+      },
+    ).whenComplete(() {
+      if (_isSheetActive) {
+        disposeControllers();
+      }
+    });
   }
 
   void _showTransferSheet(bool isDark) {
-    final accounts = _s.accounts;
+    final accounts = _appState.accounts;
     if (accounts.length < 2) return;
 
     String fromId = accounts[0]['id'].toString();
     String toId = accounts[1]['id'].toString();
     final amountCtrl = TextEditingController();
     bool isProcessing = false;
+    bool _isSheetActive = true;
+
+    void disposeControllers() {
+      if (_isSheetActive) {
+        _isSheetActive = false;
+        Future.microtask(() {
+          if (!amountCtrl.hasListeners) amountCtrl.dispose();
+        });
+      }
+    }
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => StatefulBuilder(
-        builder: (ctx, setS) => Container(
-          decoration: BoxDecoration(
-            color: isDark ? BF.darkCard : Colors.white,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-          ),
-          padding: EdgeInsets.only(
-            left: 24,
-            right: 24,
-            top: 20,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 28,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _handle(isDark),
-              const SizedBox(height: 20),
-              Text(
-                "Transfer Funds",
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w700,
-                  fontFamily: 'Poppins',
-                  color: isDark ? Colors.white : Colors.black87,
-                ),
-              ),
-              const SizedBox(height: 16),
-              _dropdown(
-                "From Account",
-                fromId,
-                accounts,
-                isDark,
-                (v) => setS(() => fromId = v!),
-              ),
-              const SizedBox(height: 10),
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: BF.accent.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(
-                    Icons.swap_vert_rounded,
-                    color: BF.accent,
-                    size: 20,
+      builder: (_) {
+        return StatefulBuilder(
+          builder: (ctx, setS) {
+            return PopScope(
+              canPop: true,
+              onPopInvoked: (didPop) {
+                if (didPop && _isSheetActive) {
+                  disposeControllers();
+                }
+              },
+              child: Container(
+                decoration: BoxDecoration(
+                  color: isDark ? BF.darkCard : Colors.white,
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(28),
                   ),
                 ),
-              ),
-              const SizedBox(height: 10),
-              _dropdown(
-                "To Account",
-                toId,
-                accounts,
-                isDark,
-                (v) => setS(() => toId = v!),
-              ),
-              const SizedBox(height: 12),
-              _field(
-                amountCtrl,
-                "Amount",
-                isDark,
-                prefix: "₱ ",
-                type: TextInputType.number,
-              ),
-              const SizedBox(height: 20),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: BF.accent,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    padding: const EdgeInsets.symmetric(vertical: 15),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
+                padding: EdgeInsets.only(
+                  left: 24,
+                  right: 24,
+                  top: 20,
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom + 28,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _handle(isDark),
+                    const SizedBox(height: 20),
+                    Text(
+                      'Transfer Funds',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        fontFamily: 'Poppins',
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
                     ),
-                    textStyle: const TextStyle(
-                      fontFamily: 'Poppins',
-                      fontWeight: FontWeight.w600,
-                      fontSize: 15,
+                    const SizedBox(height: 16),
+                    _dropdown(
+                      'From Account',
+                      fromId,
+                      accounts,
+                      isDark,
+                      (v) => setS(() => fromId = v!),
                     ),
-                  ),
-                  onPressed: isProcessing
-                      ? null
-                      : () async {
-                          final amount = double.tryParse(amountCtrl.text) ?? 0;
-                          if (amount <= 0) {
-                            ScaffoldMessenger.of(ctx).showSnackBar(
-                              const SnackBar(
-                                content: Text('Please enter a valid amount'),
-                                backgroundColor: BF.red,
-                              ),
-                            );
-                            return;
-                          }
-                          if (fromId == toId) {
-                            ScaffoldMessenger.of(ctx).showSnackBar(
-                              const SnackBar(
-                                content: Text(
-                                  'Cannot transfer to the same account',
-                                ),
-                                backgroundColor: BF.red,
-                              ),
-                            );
-                            return;
-                          }
-
-                          setS(() => isProcessing = true);
-
-                          try {
-                            final fromAccount = accounts.firstWhere(
-                              (a) => a['id'].toString() == fromId,
-                            );
-                            final toAccount = accounts.firstWhere(
-                              (a) => a['id'].toString() == toId,
-                            );
-
-                            final fromBalance =
-                                fromAccount['balance'] as double;
-                            if (fromBalance < amount) {
-                              ScaffoldMessenger.of(ctx).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Insufficient funds'),
-                                  backgroundColor: BF.red,
-                                ),
-                              );
-                              setS(() => isProcessing = false);
-                              return;
-                            }
-
-                            // Update from account (subtract)
-                            await supabase
-                                .from('accounts')
-                                .update({'balance': fromBalance - amount})
-                                .eq('id', int.parse(fromId));
-
-                            // Update to account (add)
-                            final toBalance = toAccount['balance'] as double;
-                            await supabase
-                                .from('accounts')
-                                .update({'balance': toBalance + amount})
-                                .eq('id', int.parse(toId));
-
-                            // Create transfer transaction records
-                            final now = DateTime.now().toIso8601String();
-
-                            // Outgoing transaction
-                            await supabase.from('transactions').insert({
-                              'user_id': _userId,
-                              'title': 'Transfer to ${toAccount['name']}',
-                              'amount': amount,
-                              'is_income': false,
-                              'category': 'Transfer',
-                              'account_id': int.parse(fromId),
-                              'note': 'Transfer to ${toAccount['name']}',
-                              'date': now,
-                            });
-
-                            // Incoming transaction
-                            await supabase.from('transactions').insert({
-                              'user_id': _userId,
-                              'title': 'Transfer from ${fromAccount['name']}',
-                              'amount': amount,
-                              'is_income': true,
-                              'category': 'Transfer',
-                              'account_id': int.parse(toId),
-                              'note': 'Transfer from ${fromAccount['name']}',
-                              'date': now,
-                            });
-
-                            // Refresh data
-                            final accountsResponse = await supabase
-                                .from('accounts')
-                                .select()
-                                .eq('user_id', _userId);
-
-                            _s.accounts.clear();
-                            for (var acc in accountsResponse) {
-                              _s.accounts.add({
-                                'id': acc['id'].toString(),
-                                'name': acc['name'],
-                                'type': acc['type'],
-                                'emoji': acc['emoji'],
-                                'balance': (acc['balance'] as num).toDouble(),
-                                'color': acc['color'],
-                              });
-                            }
-
-                            if (ctx.mounted) {
-                              ScaffoldMessenger.of(ctx).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    'Transfer completed successfully',
-                                  ),
-                                  backgroundColor: BF.green,
-                                  behavior: SnackBarBehavior.floating,
-                                ),
-                              );
-                              Navigator.pop(ctx);
-                            }
-                          } catch (e) {
-                            if (ctx.mounted) {
-                              ScaffoldMessenger.of(ctx).showSnackBar(
-                                SnackBar(
-                                  content: Text('Transfer failed: $e'),
-                                  backgroundColor: BF.red,
-                                ),
-                              );
-                            }
-                          } finally {
-                            if (ctx.mounted) setS(() => isProcessing = false);
-                          }
-                        },
-                  child: isProcessing
-                      ? const SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2,
+                    const SizedBox(height: 10),
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: BF.accent.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.swap_vert_rounded,
+                          color: BF.accent,
+                          size: 20,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    _dropdown(
+                      'To Account',
+                      toId,
+                      accounts,
+                      isDark,
+                      (v) => setS(() => toId = v!),
+                    ),
+                    const SizedBox(height: 12),
+                    _field(
+                      amountCtrl,
+                      'Amount',
+                      isDark,
+                      prefix: '₱ ',
+                      type: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: BF.accent,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(vertical: 15),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
                           ),
-                        )
-                      : const Text("Transfer"),
+                          textStyle: const TextStyle(
+                            fontFamily: 'Poppins',
+                            fontWeight: FontWeight.w600,
+                            fontSize: 15,
+                          ),
+                        ),
+                        onPressed: isProcessing
+                            ? null
+                            : () async {
+                                final amount =
+                                    double.tryParse(amountCtrl.text.trim()) ??
+                                    0;
+                                if (amount <= 0) {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Please enter a valid amount',
+                                      ),
+                                      backgroundColor: BF.red,
+                                    ),
+                                  );
+                                  return;
+                                }
+                                if (fromId == toId) {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Cannot transfer to the same account',
+                                      ),
+                                      backgroundColor: BF.red,
+                                    ),
+                                  );
+                                  return;
+                                }
+
+                                setS(() => isProcessing = true);
+
+                                try {
+                                  final fromAccount = accounts.firstWhere(
+                                    (a) => a['id'].toString() == fromId,
+                                  );
+                                  final toAccount = accounts.firstWhere(
+                                    (a) => a['id'].toString() == toId,
+                                  );
+                                  final fromBalance =
+                                      fromAccount['balance'] as double;
+
+                                  if (fromBalance < amount) {
+                                    ScaffoldMessenger.of(ctx).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Insufficient funds'),
+                                        backgroundColor: BF.red,
+                                      ),
+                                    );
+                                    setS(() => isProcessing = false);
+                                    return;
+                                  }
+
+                                  final fromIdInt = int.tryParse(fromId);
+                                  final toIdInt = int.tryParse(toId);
+                                  if (fromIdInt == null || toIdInt == null) {
+                                    throw Exception('Invalid account IDs');
+                                  }
+
+                                  // Update account balances
+                                  await supabase
+                                      .from('accounts')
+                                      .update({'balance': fromBalance - amount})
+                                      .eq('id', fromIdInt);
+
+                                  final toBalance =
+                                      toAccount['balance'] as double;
+                                  await supabase
+                                      .from('accounts')
+                                      .update({'balance': toBalance + amount})
+                                      .eq('id', toIdInt);
+
+                                  final now = DateTime.now().toIso8601String();
+
+                                  // Create transfer transactions WITHOUT is_transfer flag
+                                  // For FROM account - use a special category "Transfer-Out"
+                                  await supabase.from('transactions').insert({
+                                    'user_id': _userId,
+                                    'title': 'Transfer to ${toAccount['name']}',
+                                    'amount': amount,
+                                    'is_income': false,
+                                    'category': 'Transfer-Out',
+                                    'account_id': fromIdInt,
+                                    'note': 'Transfer to ${toAccount['name']}',
+                                    'date': now,
+                                  });
+
+                                  // For TO account - use a special category "Transfer-In"
+                                  await supabase.from('transactions').insert({
+                                    'user_id': _userId,
+                                    'title':
+                                        'Transfer from ${fromAccount['name']}',
+                                    'amount': amount,
+                                    'is_income': true,
+                                    'category': 'Transfer-In',
+                                    'account_id': toIdInt,
+                                    'note':
+                                        'Transfer from ${fromAccount['name']}',
+                                    'date': now,
+                                  });
+
+                                  // Refresh accounts
+                                  final accountsResponse = await supabase
+                                      .from('accounts')
+                                      .select()
+                                      .eq('user_id', _userId);
+
+                                  if (!ctx.mounted) return;
+                                  _appState.accounts.clear();
+                                  for (final acc
+                                      in (accountsResponse as List)) {
+                                    _appState.accounts.add({
+                                      'id': acc['id'].toString(),
+                                      'name': acc['name'] as String,
+                                      'type': acc['type'] as String,
+                                      'emoji': acc['emoji'] as String? ?? '💰',
+                                      'balance': (acc['balance'] as num)
+                                          .toDouble(),
+                                      'color':
+                                          acc['color'] as String? ?? '#0EA974',
+                                    });
+                                  }
+
+                                  // Refresh transactions
+                                  final transactionsResponse = await supabase
+                                      .from('transactions')
+                                      .select()
+                                      .eq('user_id', _userId)
+                                      .order('date', ascending: false);
+
+                                  if (ctx.mounted &&
+                                      (transactionsResponse as List)
+                                          .isNotEmpty) {
+                                    _appState.transactions.clear();
+                                    for (final tx in transactionsResponse) {
+                                      _appState.transactions.add({
+                                        'id': tx['id'].toString(),
+                                        'title': tx['title'] as String,
+                                        'amount': (tx['amount'] as num)
+                                            .toDouble(),
+                                        'isIncome': tx['is_income'] as bool,
+                                        'category':
+                                            tx['category'] as String? ??
+                                            'General',
+                                        'note': tx['note'] as String? ?? '',
+                                        'date': DateTime.parse(
+                                          tx['date'] as String,
+                                        ),
+                                        'accountId': tx['account_id']
+                                            .toString(),
+                                      });
+                                    }
+                                  }
+
+                                  if (mounted) {
+                                    setState(() {});
+                                  }
+
+                                  if (ctx.mounted) {
+                                    ScaffoldMessenger.of(ctx).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          'Transfer completed successfully',
+                                        ),
+                                        backgroundColor: BF.green,
+                                        behavior: SnackBarBehavior.floating,
+                                      ),
+                                    );
+                                    Navigator.pop(ctx);
+                                  }
+                                } catch (e) {
+                                  if (ctx.mounted) {
+                                    ScaffoldMessenger.of(ctx).showSnackBar(
+                                      SnackBar(
+                                        content: Text('Transfer failed: $e'),
+                                        backgroundColor: BF.red,
+                                      ),
+                                    );
+                                  }
+                                } finally {
+                                  if (ctx.mounted) {
+                                    setS(() => isProcessing = false);
+                                  }
+                                }
+                              },
+                        child: isProcessing
+                            ? const SizedBox(
+                                height: 20,
+                                width: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Text('Transfer'),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ],
-          ),
-        ),
-      ),
-    );
+            );
+          },
+        );
+      },
+    ).whenComplete(() {
+      if (_isSheetActive) {
+        disposeControllers();
+      }
+    });
   }
 
   Widget _handle(bool isDark) => Center(
@@ -998,6 +1204,10 @@ class _AccountsPageState extends State<AccountsPage> {
     bool isDark,
     ValueChanged<String?> onChanged,
   ) {
+    final validValue = accounts.any((a) => a['id'].toString() == value)
+        ? value
+        : (accounts.isNotEmpty ? accounts[0]['id'].toString() : null);
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       decoration: BoxDecoration(
@@ -1007,7 +1217,7 @@ class _AccountsPageState extends State<AccountsPage> {
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
-          value: value,
+          value: validValue,
           isExpanded: true,
           dropdownColor: isDark ? BF.darkCard : Colors.white,
           style: TextStyle(
@@ -1021,12 +1231,12 @@ class _AccountsPageState extends State<AccountsPage> {
               child: Row(
                 children: [
                   Text(
-                    a['emoji'] ?? '💰',
+                    a['emoji'] as String? ?? '💰',
                     style: const TextStyle(fontSize: 16),
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    a['name'],
+                    a['name'] as String,
                     style: const TextStyle(fontFamily: 'Poppins'),
                   ),
                 ],

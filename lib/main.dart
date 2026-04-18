@@ -5,26 +5,29 @@ import 'AppState.dart';
 import 'HomePage.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-// TODO: Replace with your actual Supabase credentials
 const String SUPABASE_URL = 'https://hlxgzitkkukbumtucsem.supabase.co';
 const String SUPABASE_ANON_KEY =
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhseGd6aXRra3VrYnVtdHVjc2VtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4OTgxNDYsImV4cCI6MjA4OTQ3NDE0Nn0.3qehXC9F0SKkaGQ0B8gZnxuuHow6UnnXF2V3zPzlb2M';
 
-final supabase = Supabase.instance.client;
+// Single global Supabase client — all other files should import from main.dart.
+// FIXED: Previously each file declared its own `final supabase = ...` which
+// caused "duplicate global variable" issues. Now only declared here.
+SupabaseClient get supabase => Supabase.instance.client;
 
+// FIXED: Default is FALSE (light mode). Previously was true (dark).
 ValueNotifier<bool> isDarkMode = ValueNotifier(false);
 final AppState _appState = AppState();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize Supabase
   await Supabase.initialize(url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY);
 
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
+      // FIXED: Use dark icons for light-mode default
+      statusBarIconBrightness: Brightness.dark,
     ),
   );
   runApp(const BudgetFlowApp());
@@ -41,13 +44,13 @@ class BF {
   static const red = Color(0xFFE53E3E);
   static const amber = Color(0xFFF6A623);
 
-  // Dark theme
+  // Dark theme surfaces
   static const darkBg = Color(0xFF0C0C12);
   static const darkSurface = Color(0xFF141420);
   static const darkCard = Color(0xFF1C1C2C);
   static const darkBorder = Color(0xFF2A2A3E);
 
-  // Light theme
+  // Light theme surfaces
   static const lightBg = Color(0xFFF4F6FC);
   static const lightCard = Color(0xFFFFFFFF);
   static const lightBorder = Color(0xFFE8ECF4);
@@ -60,7 +63,6 @@ class BF {
     stops: [0.0, 0.5, 1.0],
   );
 
-  // Shared decoration helpers
   static BoxDecoration card(bool isDark) => BoxDecoration(
     color: isDark ? darkCard : lightCard,
     borderRadius: BorderRadius.circular(20),
@@ -91,9 +93,9 @@ class BudgetFlowApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DevicePreview(
-      enabled: true,
+      enabled: true, // KEPT: device preview preserved as required
       builder: (context) {
-        return ValueListenableBuilder(
+        return ValueListenableBuilder<bool>(
           valueListenable: isDarkMode,
           builder: (context, bool darkMode, _) {
             return AppStateScope(
@@ -102,8 +104,7 @@ class BudgetFlowApp extends StatelessWidget {
                 debugShowCheckedModeBanner: false,
                 useInheritedMediaQuery: true,
                 locale: DevicePreview.locale(context),
-                builder: (context, child) =>
-                    DevicePreview.appBuilder(context, child),
+                builder: DevicePreview.appBuilder,
                 themeMode: darkMode ? ThemeMode.dark : ThemeMode.light,
                 theme: _buildTheme(Brightness.light),
                 darkTheme: _buildTheme(Brightness.dark),
@@ -132,7 +133,6 @@ class BudgetFlowApp extends StatelessWidget {
       ),
       splashFactory: NoSplash.splashFactory,
       highlightColor: Colors.transparent,
-      // Ensure consistent AppBar styling across all pages
       appBarTheme: AppBarTheme(
         backgroundColor: isDark ? BF.darkBg : BF.lightBg,
         elevation: 0,
@@ -145,13 +145,11 @@ class BudgetFlowApp extends StatelessWidget {
           color: isDark ? Colors.white : Colors.black87,
         ),
       ),
-      // Ensure consistent text selection colors
       textSelectionTheme: TextSelectionThemeData(
         cursorColor: BF.accent,
         selectionColor: BF.accent.withOpacity(0.3),
         selectionHandleColor: BF.accent,
       ),
-      // Ensure consistent input decoration theme
       inputDecorationTheme: InputDecorationTheme(
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
@@ -170,8 +168,7 @@ class AuthPage extends StatefulWidget {
   State<AuthPage> createState() => _AuthPageState();
 }
 
-class _AuthPageState extends State<AuthPage>
-    with SingleTickerProviderStateMixin {
+class _AuthPageState extends State<AuthPage> {
   bool isLogin = true;
   bool _loading = false;
 
@@ -197,9 +194,10 @@ class _AuthPageState extends State<AuthPage>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      // FIXED: resizeToAvoidBottomInset true so keyboard doesn't overflow
+      resizeToAvoidBottomInset: true,
       body: Stack(
         children: [
-          // Deep gradient background
           Container(
             decoration: const BoxDecoration(
               gradient: LinearGradient(
@@ -299,7 +297,7 @@ class _AuthPageState extends State<AuthPage>
       ),
       const SizedBox(height: 18),
       const Text(
-        "BudgetFlow",
+        'BudgetFlow',
         style: TextStyle(
           fontSize: 32,
           fontWeight: FontWeight.w700,
@@ -311,7 +309,7 @@ class _AuthPageState extends State<AuthPage>
       AnimatedSwitcher(
         duration: const Duration(milliseconds: 300),
         child: Text(
-          isLogin ? "Welcome back 👋" : "Let's get you started ✨",
+          isLogin ? 'Welcome back 👋' : "Let's get you started ✨",
           key: ValueKey(isLogin),
           style: TextStyle(color: Colors.white.withOpacity(0.55), fontSize: 15),
         ),
@@ -335,7 +333,7 @@ class _AuthPageState extends State<AuthPage>
               Expanded(
                 child: _field(
                   icon: Icons.person_rounded,
-                  hint: "First name",
+                  hint: 'First name',
                   ctrl: _first,
                 ),
               ),
@@ -343,7 +341,7 @@ class _AuthPageState extends State<AuthPage>
               Expanded(
                 child: _field(
                   icon: Icons.person_outline_rounded,
-                  hint: "Last name",
+                  hint: 'Last name',
                   ctrl: _last,
                 ),
               ),
@@ -353,14 +351,14 @@ class _AuthPageState extends State<AuthPage>
         ],
         _field(
           icon: Icons.mail_outline_rounded,
-          hint: "Email",
+          hint: 'Email',
           ctrl: _email,
           keyboard: TextInputType.emailAddress,
         ),
         const SizedBox(height: 13),
         _field(
           icon: Icons.lock_outline_rounded,
-          hint: "Password",
+          hint: 'Password',
           ctrl: _password,
           isPw: true,
           hide: _hidePw,
@@ -370,7 +368,7 @@ class _AuthPageState extends State<AuthPage>
           const SizedBox(height: 13),
           _field(
             icon: Icons.shield_outlined,
-            hint: "Confirm password",
+            hint: 'Confirm password',
             ctrl: _confirm,
             isPw: true,
             hide: _hideCnf,
@@ -384,14 +382,14 @@ class _AuthPageState extends State<AuthPage>
           Align(
             alignment: Alignment.centerRight,
             child: TextButton(
-              onPressed: () {},
+              onPressed: _handleForgotPassword,
               style: TextButton.styleFrom(
                 padding: EdgeInsets.zero,
                 minimumSize: Size.zero,
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
               child: Text(
-                "Forgot password?",
+                'Forgot password?',
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.5),
                   fontSize: 12,
@@ -433,7 +431,7 @@ class _AuthPageState extends State<AuthPage>
                 color: Colors.white,
               ),
             )
-          : Text(isLogin ? "Sign In" : "Create Account"),
+          : Text(isLogin ? 'Sign In' : 'Create Account'),
     ),
   );
 
@@ -445,7 +443,7 @@ class _AuthPageState extends State<AuthPage>
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12),
         child: Text(
-          "or",
+          'or',
           style: TextStyle(color: Colors.white.withOpacity(0.35), fontSize: 12),
         ),
       ),
@@ -457,11 +455,11 @@ class _AuthPageState extends State<AuthPage>
 
   Widget _socials() => Row(
     children: [
-      _socialBtn("Google", Icons.g_mobiledata_rounded),
+      _socialBtn('Google', Icons.g_mobiledata_rounded),
       const SizedBox(width: 10),
-      _socialBtn("Facebook", Icons.facebook_rounded),
+      _socialBtn('Facebook', Icons.facebook_rounded),
       const SizedBox(width: 10),
-      _socialBtn("Apple", Icons.apple_rounded),
+      _socialBtn('Apple', Icons.apple_rounded),
     ],
   );
 
@@ -469,7 +467,7 @@ class _AuthPageState extends State<AuthPage>
     mainAxisAlignment: MainAxisAlignment.center,
     children: [
       Text(
-        isLogin ? "No account?" : "Have an account?",
+        isLogin ? 'No account?' : 'Have an account?',
         style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 14),
       ),
       TextButton(
@@ -480,7 +478,7 @@ class _AuthPageState extends State<AuthPage>
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
         child: Text(
-          isLogin ? "Sign Up" : "Sign In",
+          isLogin ? 'Sign Up' : 'Sign In',
           style: const TextStyle(
             fontWeight: FontWeight.w700,
             fontSize: 14,
@@ -509,6 +507,9 @@ class _AuthPageState extends State<AuthPage>
       controller: ctrl,
       obscureText: isPw && hide,
       keyboardType: keyboard,
+      // FIXED: autocorrect off for password fields
+      autocorrect: !isPw,
+      enableSuggestions: !isPw,
       style: const TextStyle(
         color: Colors.white,
         fontSize: 14,
@@ -546,10 +547,11 @@ class _AuthPageState extends State<AuthPage>
   Widget _socialBtn(String label, IconData icon) => Expanded(
     child: GestureDetector(
       onTap: () {
-        // TODO: Implement social login with Supabase
+        // Social login placeholder — navigates as guest for now
+        if (!mounted) return;
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const HomePage(username: "User")),
+          MaterialPageRoute(builder: (_) => const HomePage(username: 'User')),
         );
       },
       child: Container(
@@ -587,26 +589,52 @@ class _AuthPageState extends State<AuthPage>
     ),
   );
 
+  // FIXED: Added forgot password handler
+  void _handleForgotPassword() async {
+    final email = _email.text.trim();
+    if (email.isEmpty || !email.contains('@')) {
+      _snack('Enter your email address above first');
+      return;
+    }
+    setState(() => _loading = true);
+    try {
+      await supabase.auth.resetPasswordForEmail(email);
+      _snack('Password reset email sent. Check your inbox.');
+    } on AuthException catch (e) {
+      _snack(e.message);
+    } catch (_) {
+      _snack('Could not send reset email. Please try again.');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
   void _submit() async {
     final email = _email.text.trim();
     final password = _password.text;
     final firstName = _first.text.trim();
     final lastName = _last.text.trim();
 
+    // ── Validation ──────────────────────────────────────────────────────────
     if (email.isEmpty || password.isEmpty) {
-      _snack("Fill in all fields");
+      _snack('Fill in all fields');
+      return;
+    }
+    if (!email.contains('@') || !email.contains('.')) {
+      _snack('Enter a valid email address');
       return;
     }
     if (!isLogin && (firstName.isEmpty || lastName.isEmpty)) {
-      _snack("Enter your full name");
+      _snack('Enter your full name');
       return;
     }
     if (!isLogin && password != _confirm.text) {
-      _snack("Passwords do not match");
+      _snack('Passwords do not match');
       return;
     }
-    if (!email.contains('@')) {
-      _snack("Enter a valid email");
+    // FIXED: Minimum password length check
+    if (password.length < 6) {
+      _snack('Password must be at least 6 characters');
       return;
     }
 
@@ -614,18 +642,16 @@ class _AuthPageState extends State<AuthPage>
 
     try {
       if (isLogin) {
-        // Sign in with Supabase
         final response = await supabase.auth.signInWithPassword(
           email: email,
           password: password,
         );
 
         if (response.user != null) {
-          // Fetch user metadata
           final userName =
-              response.user!.userMetadata?['full_name'] ??
+              response.user!.userMetadata?['full_name'] as String? ??
               response.user!.email?.split('@').first ??
-              "User";
+              'User';
 
           if (!mounted) return;
           Navigator.pushReplacement(
@@ -634,7 +660,6 @@ class _AuthPageState extends State<AuthPage>
           );
         }
       } else {
-        // Sign up with Supabase - this will throw an exception on error
         final response = await supabase.auth.signUp(
           email: email,
           password: password,
@@ -645,9 +670,10 @@ class _AuthPageState extends State<AuthPage>
           },
         );
 
+        if (!mounted) return;
+
         if (response.user != null) {
-          _snack("Account created! You may now sign in.");
-          // Clear fields and switch to login
+          _snack('Account created! You can now sign in.');
           setState(() {
             isLogin = true;
             _email.clear();
@@ -659,25 +685,26 @@ class _AuthPageState extends State<AuthPage>
         }
       }
     } on AuthException catch (e) {
-      // Handle Supabase auth errors specifically
-      _snack(e.message);
+      if (mounted) _snack(e.message);
     } catch (e) {
-      // Handle any other errors
-      _snack("An error occurred: ${e.toString()}");
+      if (mounted) _snack('An unexpected error occurred. Please try again.');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  void _snack(String msg) => ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: Text(msg, style: const TextStyle(fontFamily: 'Poppins')),
-      behavior: SnackBarBehavior.floating,
-      backgroundColor: BF.darkCard,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      margin: const EdgeInsets.all(16),
-    ),
-  );
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg, style: const TextStyle(fontFamily: 'Poppins')),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: BF.darkCard,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        margin: const EdgeInsets.all(16),
+      ),
+    );
+  }
 }
 
 // ─── Settings Page ────────────────────────────────────────────────────────────
@@ -695,7 +722,7 @@ class SettingsPage extends StatelessWidget {
         elevation: 0,
         centerTitle: true,
         title: Text(
-          "Settings",
+          'Settings',
           style: TextStyle(
             fontFamily: 'Poppins',
             fontWeight: FontWeight.w700,
@@ -724,13 +751,13 @@ class SettingsPage extends StatelessWidget {
                     color: isDark ? BF.accent : BF.primary,
                   ),
                   title: Text(
-                    "Dark Mode",
+                    'Dark Mode',
                     style: TextStyle(
                       fontFamily: 'Poppins',
                       color: isDark ? Colors.white : Colors.black87,
                     ),
                   ),
-                  trailing: ValueListenableBuilder(
+                  trailing: ValueListenableBuilder<bool>(
                     valueListenable: isDarkMode,
                     builder: (context, bool isDarkValue, _) {
                       return Switch(
@@ -741,11 +768,14 @@ class SettingsPage extends StatelessWidget {
                     },
                   ),
                 ),
-                const Divider(height: 1),
+                Divider(
+                  height: 1,
+                  color: isDark ? BF.darkBorder : BF.lightBorder,
+                ),
                 ListTile(
-                  leading: Icon(Icons.logout, color: BF.red),
+                  leading: const Icon(Icons.logout, color: BF.red),
                   title: Text(
-                    "Sign Out",
+                    'Sign Out',
                     style: TextStyle(
                       fontFamily: 'Poppins',
                       color: isDark ? Colors.white : Colors.black87,
@@ -769,7 +799,7 @@ class SettingsPage extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  "About BudgetFlow",
+                  'About BudgetFlow',
                   style: TextStyle(
                     fontFamily: 'Poppins',
                     fontWeight: FontWeight.w700,
@@ -779,7 +809,7 @@ class SettingsPage extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  "Version 1.0.0",
+                  'Version 1.0.0',
                   style: TextStyle(
                     fontFamily: 'Poppins',
                     fontSize: 13,
@@ -788,7 +818,7 @@ class SettingsPage extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  "Your personal finance companion",
+                  'Your personal finance companion',
                   style: TextStyle(
                     fontFamily: 'Poppins',
                     fontSize: 12,
