@@ -61,6 +61,9 @@ class _BudgetPageState extends State<BudgetPage> {
           'limit': (budget['budget_limit'] as num).toDouble(),
           'period': 'Monthly',
           'emoji': _getEmojiForCategory(budget['category'] as String),
+          'createdAt': budget['created_at'] != null
+              ? DateTime.parse(budget['created_at'] as String)
+              : DateTime(2000),
         });
       }
     } catch (e) {
@@ -108,17 +111,25 @@ class _BudgetPageState extends State<BudgetPage> {
     return emojiMap[category] ?? '💰';
   }
 
-  double _getSpentForCategory(String category) {
+  /// Returns spending for [category] that occurred STRICTLY AFTER the budget
+  /// was created, and (when no date-range filter is active) within the current
+  /// calendar month.
+  double _getSpentForCategory(String category, {DateTime? budgetCreatedAt}) {
     final now = DateTime.now();
+    final createdAt = budgetCreatedAt ?? DateTime(2000);
 
-    // If a date range filter is active, use it instead of current month
     if (_filterDateRange != null) {
+      // Respect whichever is later: the budget creation time or the filter start
+      final rangeStart = _filterDateRange!.start.isAfter(createdAt)
+          ? _filterDateRange!.start
+          : createdAt;
       return _appState.transactions
           .where(
             (tx) =>
                 tx['category'] == category &&
                 !(tx['isIncome'] as bool) &&
-                !(tx['date'] as DateTime).isBefore(_filterDateRange!.start) &&
+                (tx['date'] as DateTime).isAfter(createdAt) &&
+                !(tx['date'] as DateTime).isBefore(rangeStart) &&
                 (tx['date'] as DateTime).isBefore(
                   _filterDateRange!.end.add(const Duration(days: 1)),
                 ),
@@ -131,6 +142,9 @@ class _BudgetPageState extends State<BudgetPage> {
           (tx) =>
               tx['category'] == category &&
               !(tx['isIncome'] as bool) &&
+              // STRICTLY after creation — no pre-existing transactions counted
+              (tx['date'] as DateTime).isAfter(createdAt) &&
+              // Current month only
               (tx['date'] as DateTime).month == now.month &&
               (tx['date'] as DateTime).year == now.year,
         )
@@ -139,38 +153,48 @@ class _BudgetPageState extends State<BudgetPage> {
 
   double _getTotalSpent() => _filteredBudgets.fold(
     0.0,
-    (sum, b) => sum + _getSpentForCategory(b['category'] as String),
+    (sum, b) =>
+        sum +
+        _getSpentForCategory(
+          b['category'] as String,
+          budgetCreatedAt: b['createdAt'] as DateTime?,
+        ),
   );
 
   double _getTotalLimit() =>
       _filteredBudgets.fold(0.0, (sum, b) => sum + (b['limit'] as double));
 
-  double _getRemainingForCategory(String category, double limit) =>
-      limit - _getSpentForCategory(category);
+  double _getRemainingForCategory(Map<String, dynamic> budget) {
+    final spent = _getSpentForCategory(
+      budget['category'] as String,
+      budgetCreatedAt: budget['createdAt'] as DateTime?,
+    );
+    return (budget['limit'] as double) - spent;
+  }
 
   // ── Filtered budgets ──────────────────────────────────────────────────────
   List<Map<String, dynamic>> get _filteredBudgets {
     return _appState.budgets.where((b) {
       final category = b['category'] as String;
       final limit = b['limit'] as double;
-      final spent = _getSpentForCategory(category);
+      final spent = _getSpentForCategory(
+        category,
+        budgetCreatedAt: b['createdAt'] as DateTime?,
+      );
       final progress = limit > 0 ? spent / limit : 0.0;
       final isOver = spent > limit;
       final isNear = progress >= 0.8 && !isOver;
 
-      // Search filter
       if (_searchQuery.isNotEmpty) {
         if (!category.toLowerCase().contains(_searchQuery.toLowerCase())) {
           return false;
         }
       }
 
-      // Category filter
       if (_filterCategory != 'All' && category != _filterCategory) {
         return false;
       }
 
-      // Status filter
       if (_filterStatus == 'Over Budget' && !isOver) return false;
       if (_filterStatus == 'Near Limit' && !isNear) return false;
       if (_filterStatus == 'On Track' && (isOver || isNear)) return false;
@@ -206,7 +230,7 @@ class _BudgetPageState extends State<BudgetPage> {
               onRefresh: _loadBudgets,
               child: Column(
                 children: [
-                  // ── Filter bar (same pattern as transactions) ─────────────
+                  // ── Filter bar ────────────────────────────────────────────
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
                     child: Column(
@@ -361,13 +385,13 @@ class _BudgetPageState extends State<BudgetPage> {
                       ],
                     ),
                   ),
-                  // ── Summary bar ──────────────────────────────────────────
+                  // ── Summary bar ───────────────────────────────────────────
                   if (_appState.budgets.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
                       child: _summaryBar(isDark),
                     ),
-                  // ── Budget list ──────────────────────────────────────────
+                  // ── Budget list ───────────────────────────────────────────
                   Expanded(
                     child: _filteredBudgets.isEmpty
                         ? _emptyFilterView(isDark)
@@ -391,11 +415,14 @@ class _BudgetPageState extends State<BudgetPage> {
     );
   }
 
-  // ── Summary bar (mirrors activitySummaryBar in transactions) ─────────────
+  // ── Summary bar ───────────────────────────────────────────────────────────
   Widget _summaryBar(bool isDark) {
     final filtered = _filteredBudgets;
     final overCount = filtered.where((b) {
-      final spent = _getSpentForCategory(b['category'] as String);
+      final spent = _getSpentForCategory(
+        b['category'] as String,
+        budgetCreatedAt: b['createdAt'] as DateTime?,
+      );
       return spent > (b['limit'] as double);
     }).length;
 
@@ -629,8 +656,11 @@ class _BudgetPageState extends State<BudgetPage> {
   Widget _budgetCard(Map<String, dynamic> budget, bool isDark) {
     final category = budget['category'] as String;
     final limit = budget['limit'] as double;
-    final spent = _getSpentForCategory(category);
-    final remaining = _getRemainingForCategory(category, limit);
+    final spent = _getSpentForCategory(
+      category,
+      budgetCreatedAt: budget['createdAt'] as DateTime?,
+    );
+    final remaining = _getRemainingForCategory(budget);
     final progress = limit > 0 ? (spent / limit).clamp(0.0, 1.0) : 0.0;
     final isOver = spent > limit;
     final isNear = progress >= 0.8 && !isOver;
@@ -1004,7 +1034,6 @@ class _BudgetPageState extends State<BudgetPage> {
     );
   }
 
-  // ── Filter chip (identical to transactions _chip) ─────────────────────────
   Widget _chip(String label, bool active, bool isDark, VoidCallback onTap) {
     return GestureDetector(
       onTap: onTap,
@@ -1042,7 +1071,6 @@ class _BudgetPageState extends State<BudgetPage> {
   }
 
   // ── Add / Edit Budget Sheet ───────────────────────────────────────────────
-  // Category list mirrors TxCategories from HomePage
   static const List<Map<String, dynamic>> _budgetCategories = [
     {'label': 'Food', 'emoji': '🍜', 'color': Color(0xFFFF6B6B)},
     {'label': 'Transportation', 'emoji': '🚗', 'color': Color(0xFF4ECDC4)},
@@ -1133,8 +1161,6 @@ class _BudgetPageState extends State<BudgetPage> {
                         ),
                       ),
                       const SizedBox(height: 20),
-
-                      // ── Category label ──────────────────────────────────
                       Text(
                         'Category',
                         style: TextStyle(
@@ -1145,8 +1171,6 @@ class _BudgetPageState extends State<BudgetPage> {
                         ),
                       ),
                       const SizedBox(height: 8),
-
-                      // ── Selected category badge (same as transactions) ──
                       if (selectedCategory.isNotEmpty)
                         Container(
                           margin: const EdgeInsets.only(bottom: 8),
@@ -1198,8 +1222,6 @@ class _BudgetPageState extends State<BudgetPage> {
                             ],
                           ),
                         ),
-
-                      // ── Category chip grid (mirrors transactions) ───────
                       Wrap(
                         spacing: 6,
                         runSpacing: 6,
@@ -1304,8 +1326,6 @@ class _BudgetPageState extends State<BudgetPage> {
                           );
                         }).toList(),
                       ),
-
-                      // ── Custom category text field ───────────────────────
                       if (isCustomCategory || selectedCategory == 'Others') ...[
                         const SizedBox(height: 10),
                         _field(
@@ -1314,7 +1334,6 @@ class _BudgetPageState extends State<BudgetPage> {
                           isDark,
                         ),
                       ],
-
                       const SizedBox(height: 14),
                       _field(
                         limitCtrl,
@@ -1324,8 +1343,6 @@ class _BudgetPageState extends State<BudgetPage> {
                         type: TextInputType.number,
                       ),
                       const SizedBox(height: 12),
-
-                      // ── Period toggle ───────────────────────────────────
                       Row(
                         children: ['Monthly', 'Weekly'].map((p) {
                           final sel = period == p;
@@ -1373,8 +1390,6 @@ class _BudgetPageState extends State<BudgetPage> {
                         }).toList(),
                       ),
                       const SizedBox(height: 20),
-
-                      // ── Save button ─────────────────────────────────────
                       SizedBox(
                         width: double.infinity,
                         child: ElevatedButton(
@@ -1399,7 +1414,6 @@ class _BudgetPageState extends State<BudgetPage> {
                                       double.tryParse(limitCtrl.text.trim()) ??
                                       0;
 
-                                  // Resolve final category name
                                   final String finalCategory;
                                   if (isCustomCategory ||
                                       selectedCategory == 'Others') {
@@ -1429,7 +1443,6 @@ class _BudgetPageState extends State<BudgetPage> {
 
                                   setS(() => isSaving = true);
 
-                                  // Derive emoji for the chosen category
                                   final resolvedEmoji = _categoryEmoji(
                                     finalCategory,
                                   );
@@ -1464,17 +1477,30 @@ class _BudgetPageState extends State<BudgetPage> {
                                             }
                                           });
                                     } else {
+                                      // Capture creation time so the budget
+                                      // starts with zero spending
+                                      final now = DateTime.now();
                                       final response = await supabase
                                           .from('budgets')
                                           .insert({
                                             'user_id': _userId,
                                             'category': finalCategory,
                                             'budget_limit': limit,
+                                            'created_at': now.toIso8601String(),
                                           })
                                           .select();
 
                                       if (!ctx.mounted) return;
                                       if ((response as List).isNotEmpty) {
+                                        // Use the server-returned created_at
+                                        // so the cutoff is precise
+                                        final serverCreatedAt =
+                                            response[0]['created_at'] != null
+                                            ? DateTime.parse(
+                                                response[0]['created_at']
+                                                    as String,
+                                              )
+                                            : now;
                                         WidgetsBinding.instance
                                             .addPostFrameCallback((_) {
                                               if (mounted) {
@@ -1485,6 +1511,7 @@ class _BudgetPageState extends State<BudgetPage> {
                                                   'limit': limit,
                                                   'period': period,
                                                   'emoji': resolvedEmoji,
+                                                  'createdAt': serverCreatedAt,
                                                 });
                                               }
                                             });
