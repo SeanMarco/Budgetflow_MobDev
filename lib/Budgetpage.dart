@@ -15,6 +15,12 @@ class _BudgetPageState extends State<BudgetPage> {
   bool _isLoading = false;
   late AppState _appState;
 
+  // ── Filters (same as transactions) ───────────────────────────────────────
+  String _searchQuery = '';
+  String _filterStatus = 'All'; // All | Over Budget | Near Limit | On Track
+  String _filterCategory = 'All';
+  DateTimeRange? _filterDateRange;
+
   String get _userId => supabase.auth.currentUser?.id ?? '';
 
   @override
@@ -27,9 +33,7 @@ class _BudgetPageState extends State<BudgetPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        _loadBudgets();
-      }
+      if (mounted) _loadBudgets();
     });
   }
 
@@ -40,9 +44,7 @@ class _BudgetPageState extends State<BudgetPage> {
 
   Future<void> _loadBudgets() async {
     if (!mounted) return;
-
     setState(() => _isLoading = true);
-
     try {
       final response = await supabase
           .from('budgets')
@@ -76,9 +78,7 @@ class _BudgetPageState extends State<BudgetPage> {
         );
       }
     } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -110,6 +110,22 @@ class _BudgetPageState extends State<BudgetPage> {
 
   double _getSpentForCategory(String category) {
     final now = DateTime.now();
+
+    // If a date range filter is active, use it instead of current month
+    if (_filterDateRange != null) {
+      return _appState.transactions
+          .where(
+            (tx) =>
+                tx['category'] == category &&
+                !(tx['isIncome'] as bool) &&
+                !(tx['date'] as DateTime).isBefore(_filterDateRange!.start) &&
+                (tx['date'] as DateTime).isBefore(
+                  _filterDateRange!.end.add(const Duration(days: 1)),
+                ),
+          )
+          .fold(0.0, (sum, tx) => sum + (tx['amount'] as double));
+    }
+
     return _appState.transactions
         .where(
           (tx) =>
@@ -121,16 +137,52 @@ class _BudgetPageState extends State<BudgetPage> {
         .fold(0.0, (sum, tx) => sum + (tx['amount'] as double));
   }
 
-  double _getTotalSpent() => _appState.budgets.fold(
+  double _getTotalSpent() => _filteredBudgets.fold(
     0.0,
     (sum, b) => sum + _getSpentForCategory(b['category'] as String),
   );
 
   double _getTotalLimit() =>
-      _appState.budgets.fold(0.0, (sum, b) => sum + (b['limit'] as double));
+      _filteredBudgets.fold(0.0, (sum, b) => sum + (b['limit'] as double));
 
   double _getRemainingForCategory(String category, double limit) =>
       limit - _getSpentForCategory(category);
+
+  // ── Filtered budgets ──────────────────────────────────────────────────────
+  List<Map<String, dynamic>> get _filteredBudgets {
+    return _appState.budgets.where((b) {
+      final category = b['category'] as String;
+      final limit = b['limit'] as double;
+      final spent = _getSpentForCategory(category);
+      final progress = limit > 0 ? spent / limit : 0.0;
+      final isOver = spent > limit;
+      final isNear = progress >= 0.8 && !isOver;
+
+      // Search filter
+      if (_searchQuery.isNotEmpty) {
+        if (!category.toLowerCase().contains(_searchQuery.toLowerCase())) {
+          return false;
+        }
+      }
+
+      // Category filter
+      if (_filterCategory != 'All' && category != _filterCategory) {
+        return false;
+      }
+
+      // Status filter
+      if (_filterStatus == 'Over Budget' && !isOver) return false;
+      if (_filterStatus == 'Near Limit' && !isNear) return false;
+      if (_filterStatus == 'On Track' && (isOver || isNear)) return false;
+
+      return true;
+    }).toList();
+  }
+
+  List<String> get _categoryOptions => [
+    'All',
+    ..._appState.budgets.map((b) => b['category'] as String).toSet(),
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -152,19 +204,246 @@ class _BudgetPageState extends State<BudgetPage> {
           : RefreshIndicator(
               color: BF.accent,
               onRefresh: _loadBudgets,
-              child: ListView(
-                padding: const EdgeInsets.all(20),
+              child: Column(
                 children: [
-                  _overviewCard(isDark),
-                  const SizedBox(height: 20),
-                  _sectionLabel('Your Budgets', isDark),
-                  const SizedBox(height: 12),
-                  ..._appState.budgets.map((b) => _budgetCard(b, isDark)),
-                  const SizedBox(height: 80),
+                  // ── Filter bar (same pattern as transactions) ─────────────
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                    child: Column(
+                      children: [
+                        // Search field
+                        Container(
+                          height: 48,
+                          decoration: BF
+                              .card(isDark)
+                              .copyWith(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                          child: Row(
+                            children: [
+                              const SizedBox(width: 14),
+                              Icon(
+                                Icons.search_rounded,
+                                color: isDark ? Colors.white38 : Colors.black38,
+                                size: 20,
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: TextField(
+                                  onChanged: (v) =>
+                                      setState(() => _searchQuery = v),
+                                  style: TextStyle(
+                                    fontFamily: 'Poppins',
+                                    fontSize: 14,
+                                    color: isDark
+                                        ? Colors.white
+                                        : Colors.black87,
+                                  ),
+                                  decoration: InputDecoration(
+                                    hintText: 'Search budgets…',
+                                    hintStyle: TextStyle(
+                                      fontFamily: 'Poppins',
+                                      fontSize: 14,
+                                      color: isDark
+                                          ? Colors.white38
+                                          : Colors.black38,
+                                    ),
+                                    border: InputBorder.none,
+                                    isDense: true,
+                                  ),
+                                ),
+                              ),
+                              if (_searchQuery.isNotEmpty)
+                                GestureDetector(
+                                  onTap: () =>
+                                      setState(() => _searchQuery = ''),
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(right: 12),
+                                    child: Icon(
+                                      Icons.close_rounded,
+                                      color: isDark
+                                          ? Colors.white38
+                                          : Colors.black38,
+                                      size: 18,
+                                    ),
+                                  ),
+                                )
+                              else
+                                const SizedBox(width: 12),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        // Filter chips
+                        SizedBox(
+                          height: 34,
+                          child: ListView(
+                            scrollDirection: Axis.horizontal,
+                            children: [
+                              _chip(
+                                'All',
+                                _filterStatus == 'All' &&
+                                    _filterCategory == 'All',
+                                isDark,
+                                () => setState(() {
+                                  _filterStatus = 'All';
+                                  _filterCategory = 'All';
+                                  _filterDateRange = null;
+                                }),
+                              ),
+                              _chip(
+                                'Over Budget',
+                                _filterStatus == 'Over Budget',
+                                isDark,
+                                () => setState(
+                                  () => _filterStatus =
+                                      _filterStatus == 'Over Budget'
+                                      ? 'All'
+                                      : 'Over Budget',
+                                ),
+                              ),
+                              _chip(
+                                'Near Limit',
+                                _filterStatus == 'Near Limit',
+                                isDark,
+                                () => setState(
+                                  () => _filterStatus =
+                                      _filterStatus == 'Near Limit'
+                                      ? 'All'
+                                      : 'Near Limit',
+                                ),
+                              ),
+                              _chip(
+                                'On Track',
+                                _filterStatus == 'On Track',
+                                isDark,
+                                () => setState(
+                                  () => _filterStatus =
+                                      _filterStatus == 'On Track'
+                                      ? 'All'
+                                      : 'On Track',
+                                ),
+                              ),
+                              ..._categoryOptions
+                                  .where((c) => c != 'All')
+                                  .map(
+                                    (c) => _chip(
+                                      c,
+                                      _filterCategory == c,
+                                      isDark,
+                                      () => setState(
+                                        () => _filterCategory =
+                                            _filterCategory == c ? 'All' : c,
+                                      ),
+                                    ),
+                                  ),
+                              _chip(
+                                _filterDateRange != null
+                                    ? '📅 Date ✓'
+                                    : '📅 Date',
+                                _filterDateRange != null,
+                                isDark,
+                                () async {
+                                  final r = await showDateRangePicker(
+                                    context: context,
+                                    firstDate: DateTime(2020),
+                                    lastDate: DateTime.now(),
+                                    initialDateRange: _filterDateRange,
+                                  );
+                                  if (mounted) {
+                                    setState(() => _filterDateRange = r);
+                                  }
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // ── Summary bar ──────────────────────────────────────────
+                  if (_appState.budgets.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+                      child: _summaryBar(isDark),
+                    ),
+                  // ── Budget list ──────────────────────────────────────────
+                  Expanded(
+                    child: _filteredBudgets.isEmpty
+                        ? _emptyFilterView(isDark)
+                        : ListView(
+                            padding: const EdgeInsets.fromLTRB(20, 14, 20, 100),
+                            children: [
+                              _overviewCard(isDark),
+                              const SizedBox(height: 20),
+                              _sectionLabel('Your Budgets', isDark),
+                              const SizedBox(height: 12),
+                              ..._filteredBudgets.map(
+                                (b) => _budgetCard(b, isDark),
+                              ),
+                            ],
+                          ),
+                  ),
                 ],
               ),
             ),
       floatingActionButton: _fab(isDark),
+    );
+  }
+
+  // ── Summary bar (mirrors activitySummaryBar in transactions) ─────────────
+  Widget _summaryBar(bool isDark) {
+    final filtered = _filteredBudgets;
+    final overCount = filtered.where((b) {
+      final spent = _getSpentForCategory(b['category'] as String);
+      return spent > (b['limit'] as double);
+    }).length;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: BF.accent.withOpacity(0.07),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: BF.accent.withOpacity(0.15)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            '${filtered.length} budget${filtered.length != 1 ? 's' : ''}',
+            style: TextStyle(
+              fontFamily: 'Poppins',
+              fontSize: 11,
+              color: isDark ? Colors.white54 : Colors.black45,
+            ),
+          ),
+          Row(
+            children: [
+              Text(
+                'Limit: ${currency.format(_getTotalLimit())}',
+                style: const TextStyle(
+                  fontFamily: 'Poppins',
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: BF.accent,
+                ),
+              ),
+              if (overCount > 0) ...[
+                const SizedBox(width: 10),
+                Text(
+                  '$overCount over',
+                  style: const TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: BF.red,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -233,6 +512,10 @@ class _BudgetPageState extends State<BudgetPage> {
         ? (totalSpent / totalLimit).clamp(0.0, 1.0)
         : 0.0;
 
+    final periodLabel = _filterDateRange != null
+        ? '${DateFormat('MMM d').format(_filterDateRange!.start)} – ${DateFormat('MMM d').format(_filterDateRange!.end)}'
+        : DateFormat('MMMM yyyy').format(DateTime.now());
+
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
@@ -257,7 +540,7 @@ class _BudgetPageState extends State<BudgetPage> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                'Monthly Overview',
+                'Overview',
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.6),
                   fontFamily: 'Poppins',
@@ -274,7 +557,7 @@ class _BudgetPageState extends State<BudgetPage> {
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  DateFormat('MMMM yyyy').format(DateTime.now()),
+                  periodLabel,
                   style: const TextStyle(
                     color: Colors.white,
                     fontFamily: 'Poppins',
@@ -670,6 +953,38 @@ class _BudgetPageState extends State<BudgetPage> {
     ),
   );
 
+  Widget _emptyFilterView(bool isDark) => Center(
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Container(
+          width: 60,
+          height: 60,
+          decoration: BoxDecoration(
+            color: isDark
+                ? Colors.white.withOpacity(0.05)
+                : Colors.black.withOpacity(0.04),
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Icon(
+            Icons.search_off_rounded,
+            size: 28,
+            color: isDark ? Colors.white24 : Colors.black26,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'No budgets match your filters',
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            color: isDark ? Colors.white38 : Colors.black38,
+            fontSize: 14,
+          ),
+        ),
+      ],
+    ),
+  );
+
   Widget _menuRow(
     IconData icon,
     String label,
@@ -689,54 +1004,89 @@ class _BudgetPageState extends State<BudgetPage> {
     );
   }
 
-  // Add/Edit Budget Sheet - FIXED VERSION
-  void _showSheet(bool isDark, {Map<String, dynamic>? existing}) {
-    // Create controllers
-    final categoryCtrl = TextEditingController(
-      text: existing?['category'] as String? ?? '',
+  // ── Filter chip (identical to transactions _chip) ─────────────────────────
+  Widget _chip(String label, bool active, bool isDark, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: active
+              ? BF.accent
+              : (isDark
+                    ? Colors.white.withOpacity(0.07)
+                    : Colors.black.withOpacity(0.05)),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: active
+                ? BF.accent
+                : (isDark ? BF.darkBorder : BF.lightBorder),
+            width: 1,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: active
+                ? Colors.white
+                : (isDark ? Colors.white60 : Colors.black54),
+          ),
+        ),
+      ),
     );
+  }
+
+  // ── Add / Edit Budget Sheet ───────────────────────────────────────────────
+  // Category list mirrors TxCategories from HomePage
+  static const List<Map<String, dynamic>> _budgetCategories = [
+    {'label': 'Food', 'emoji': '🍜', 'color': Color(0xFFFF6B6B)},
+    {'label': 'Transportation', 'emoji': '🚗', 'color': Color(0xFF4ECDC4)},
+    {'label': 'Bills & Utilities', 'emoji': '💡', 'color': Color(0xFFFFE66D)},
+    {'label': 'Rent / Housing', 'emoji': '🏠', 'color': Color(0xFF6C63FF)},
+    {'label': 'Entertainment', 'emoji': '🎬', 'color': Color(0xFFFF9FF3)},
+    {'label': 'Shopping', 'emoji': '🛍️', 'color': Color(0xFFFFA502)},
+    {'label': 'Health / Medical', 'emoji': '💊', 'color': Color(0xFF2ED573)},
+    {'label': 'Education', 'emoji': '📚', 'color': Color(0xFF1E90FF)},
+    {'label': 'Savings', 'emoji': '🏦', 'color': Color(0xFF0EA974)},
+    {'label': 'Investments', 'emoji': '📈', 'color': Color(0xFF00D2D3)},
+    {'label': 'Debt / Loans', 'emoji': '💳', 'color': Color(0xFFFF4757)},
+    {'label': 'Insurance', 'emoji': '🛡️', 'color': Color(0xFF747D8C)},
+    {'label': 'Subscriptions', 'emoji': '🔄', 'color': Color(0xFFA29BFE)},
+    {'label': 'Travel', 'emoji': '✈️', 'color': Color(0xFF00CEC9)},
+    {'label': 'Personal Care', 'emoji': '🧴', 'color': Color(0xFFFD79A8)},
+    {'label': 'Gifts / Donations', 'emoji': '🎁', 'color': Color(0xFFE17055)},
+    {'label': 'Family / Kids', 'emoji': '👨‍👩‍👧', 'color': Color(0xFFFFB8B8)},
+    {'label': 'Emergency', 'emoji': '🚨', 'color': Color(0xFFD63031)},
+    {'label': 'Others', 'emoji': '✏️', 'color': Color(0xFF636E72)},
+  ];
+
+  void _showSheet(bool isDark, {Map<String, dynamic>? existing}) {
     final limitCtrl = TextEditingController(
       text: existing != null
           ? (existing['limit'] as double).toStringAsFixed(0)
           : '',
     );
+    final customCategoryCtrl = TextEditingController();
 
     String period = existing?['period'] as String? ?? 'Monthly';
-    String emoji = existing?['emoji'] as String? ?? '💰';
+    String selectedCategory = existing?['category'] as String? ?? '';
+    bool isCustomCategory =
+        selectedCategory.isNotEmpty &&
+        !_budgetCategories.any((c) => c['label'] == selectedCategory);
     bool isSaving = false;
-
-    // Track if the bottom sheet is still active
     bool _isSheetActive = true;
-
-    const emojis = [
-      '💰',
-      '🍔',
-      '🚗',
-      '🏠',
-      '💊',
-      '📚',
-      '🎮',
-      '✈️',
-      '👕',
-      '💡',
-      '📱',
-      '🎬',
-    ];
-
-    // Use a GlobalKey to track the sheet's state
-    final sheetStateKey = GlobalKey<State<StatefulWidget>>();
 
     void disposeControllers() {
       if (_isSheetActive) {
         _isSheetActive = false;
-        // Add a small delay to ensure no pending rebuilds
         Future.microtask(() {
-          if (!categoryCtrl.hasListeners) {
-            categoryCtrl.dispose();
-          }
-          if (!limitCtrl.hasListeners) {
-            limitCtrl.dispose();
-          }
+          if (!limitCtrl.hasListeners) limitCtrl.dispose();
+          if (!customCategoryCtrl.hasListeners) customCategoryCtrl.dispose();
         });
       }
     }
@@ -747,14 +1097,11 @@ class _BudgetPageState extends State<BudgetPage> {
       backgroundColor: Colors.transparent,
       builder: (context) {
         return StatefulBuilder(
-          key: sheetStateKey,
           builder: (ctx, setS) {
             return PopScope(
               canPop: true,
               onPopInvoked: (didPop) {
-                if (didPop && _isSheetActive) {
-                  disposeControllers();
-                }
+                if (didPop && _isSheetActive) disposeControllers();
               },
               child: Container(
                 decoration: BoxDecoration(
@@ -769,249 +1116,439 @@ class _BudgetPageState extends State<BudgetPage> {
                   top: 20,
                   bottom: MediaQuery.of(ctx).viewInsets.bottom + 28,
                 ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _sheetHandle(isDark),
-                    const SizedBox(height: 20),
-                    Text(
-                      existing != null ? 'Edit Budget' : 'New Budget',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                        fontFamily: 'Poppins',
-                        color: isDark ? Colors.white : Colors.black87,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      height: 44,
-                      child: ListView.builder(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: emojis.length,
-                        itemBuilder: (_, i) => GestureDetector(
-                          onTap: () => setS(() => emoji = emojis[i]),
-                          child: _emojiBtn(
-                            emojis[i],
-                            emoji == emojis[i],
-                            isDark,
-                          ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _sheetHandle(isDark),
+                      const SizedBox(height: 20),
+                      Text(
+                        existing != null ? 'Edit Budget' : 'New Budget',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          fontFamily: 'Poppins',
+                          color: isDark ? Colors.white : Colors.black87,
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 14),
-                    _field(categoryCtrl, 'Category name', isDark),
-                    const SizedBox(height: 12),
-                    _field(
-                      limitCtrl,
-                      'Budget limit',
-                      isDark,
-                      prefix: '₱ ',
-                      type: TextInputType.number,
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: ['Monthly', 'Weekly'].map((p) {
-                        final sel = period == p;
-                        return Expanded(
-                          child: GestureDetector(
-                            onTap: () => setS(() => period = p),
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 200),
-                              margin: EdgeInsets.only(
-                                right: p == 'Monthly' ? 8 : 0,
+                      const SizedBox(height: 20),
+
+                      // ── Category label ──────────────────────────────────
+                      Text(
+                        'Category',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: isDark ? Colors.white70 : Colors.black54,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+
+                      // ── Selected category badge (same as transactions) ──
+                      if (selectedCategory.isNotEmpty)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _categoryColor(
+                              selectedCategory,
+                            ).withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: _categoryColor(
+                                selectedCategory,
+                              ).withOpacity(0.35),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                _categoryEmoji(selectedCategory),
+                                style: const TextStyle(fontSize: 14),
                               ),
-                              padding: const EdgeInsets.symmetric(vertical: 13),
-                              decoration: BoxDecoration(
-                                color: sel
-                                    ? BF.accent
-                                    : (isDark ? BF.darkSurface : BF.lightBg),
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: sel
-                                      ? BF.accent
-                                      : (isDark
-                                            ? BF.darkBorder
-                                            : BF.lightBorder),
-                                ),
-                              ),
-                              alignment: Alignment.center,
-                              child: Text(
-                                p,
+                              const SizedBox(width: 6),
+                              Text(
+                                selectedCategory,
                                 style: TextStyle(
                                   fontFamily: 'Poppins',
+                                  fontSize: 12,
                                   fontWeight: FontWeight.w600,
-                                  fontSize: 14,
+                                  color: _categoryColor(selectedCategory),
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              GestureDetector(
+                                onTap: () => setS(() {
+                                  selectedCategory = '';
+                                  isCustomCategory = false;
+                                  customCategoryCtrl.clear();
+                                }),
+                                child: Icon(
+                                  Icons.close_rounded,
+                                  size: 12,
+                                  color: _categoryColor(selectedCategory),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                      // ── Category chip grid (mirrors transactions) ───────
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: _budgetCategories.map((cat) {
+                          final label = cat['label'] as String;
+                          final emoji = cat['emoji'] as String;
+                          final color = cat['color'] as Color;
+                          final isSelected = selectedCategory == label;
+
+                          if (label == 'Others') {
+                            return GestureDetector(
+                              onTap: () => setS(() {
+                                selectedCategory = 'Others';
+                                isCustomCategory = true;
+                                customCategoryCtrl.text = '';
+                              }),
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 160),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 7,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isSelected
+                                      ? color
+                                      : color.withOpacity(0.08),
+                                  borderRadius: BorderRadius.circular(18),
+                                  border: Border.all(
+                                    color: isSelected
+                                        ? color
+                                        : color.withOpacity(0.25),
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      emoji,
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      'Custom…',
+                                      style: TextStyle(
+                                        fontFamily: 'Poppins',
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: isSelected
+                                            ? Colors.white
+                                            : color,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          }
+
+                          return GestureDetector(
+                            onTap: () => setS(() {
+                              selectedCategory = label;
+                              isCustomCategory = false;
+                              customCategoryCtrl.clear();
+                            }),
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 160),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 7,
+                              ),
+                              decoration: BoxDecoration(
+                                color: isSelected
+                                    ? color
+                                    : color.withOpacity(0.08),
+                                borderRadius: BorderRadius.circular(18),
+                                border: Border.all(
+                                  color: isSelected
+                                      ? color
+                                      : color.withOpacity(0.25),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    emoji,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    label,
+                                    style: TextStyle(
+                                      fontFamily: 'Poppins',
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: isSelected ? Colors.white : color,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+
+                      // ── Custom category text field ───────────────────────
+                      if (isCustomCategory || selectedCategory == 'Others') ...[
+                        const SizedBox(height: 10),
+                        _field(
+                          customCategoryCtrl,
+                          'Type your category…',
+                          isDark,
+                        ),
+                      ],
+
+                      const SizedBox(height: 14),
+                      _field(
+                        limitCtrl,
+                        'Budget limit',
+                        isDark,
+                        prefix: '₱ ',
+                        type: TextInputType.number,
+                      ),
+                      const SizedBox(height: 12),
+
+                      // ── Period toggle ───────────────────────────────────
+                      Row(
+                        children: ['Monthly', 'Weekly'].map((p) {
+                          final sel = period == p;
+                          return Expanded(
+                            child: GestureDetector(
+                              onTap: () => setS(() => period = p),
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 200),
+                                margin: EdgeInsets.only(
+                                  right: p == 'Monthly' ? 8 : 0,
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 13,
+                                ),
+                                decoration: BoxDecoration(
                                   color: sel
-                                      ? Colors.white
-                                      : (isDark
-                                            ? Colors.white54
-                                            : Colors.black45),
+                                      ? BF.accent
+                                      : (isDark ? BF.darkSurface : BF.lightBg),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: sel
+                                        ? BF.accent
+                                        : (isDark
+                                              ? BF.darkBorder
+                                              : BF.lightBorder),
+                                  ),
+                                ),
+                                alignment: Alignment.center,
+                                child: Text(
+                                  p,
+                                  style: TextStyle(
+                                    fontFamily: 'Poppins',
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 14,
+                                    color: sel
+                                        ? Colors.white
+                                        : (isDark
+                                              ? Colors.white54
+                                              : Colors.black45),
+                                  ),
                                 ),
                               ),
                             ),
+                          );
+                        }).toList(),
+                      ),
+                      const SizedBox(height: 20),
+
+                      // ── Save button ─────────────────────────────────────
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: BF.accent,
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            padding: const EdgeInsets.symmetric(vertical: 15),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            textStyle: const TextStyle(
+                              fontFamily: 'Poppins',
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                            ),
                           ),
-                        );
-                      }).toList(),
-                    ),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: BF.accent,
-                          foregroundColor: Colors.white,
-                          elevation: 0,
-                          padding: const EdgeInsets.symmetric(vertical: 15),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          textStyle: const TextStyle(
-                            fontFamily: 'Poppins',
-                            fontWeight: FontWeight.w600,
-                            fontSize: 15,
-                          ),
-                        ),
-                        onPressed: isSaving
-                            ? null
-                            : () async {
-                                final limit =
-                                    double.tryParse(limitCtrl.text.trim()) ?? 0;
-                                final category = categoryCtrl.text.trim();
+                          onPressed: isSaving
+                              ? null
+                              : () async {
+                                  final limit =
+                                      double.tryParse(limitCtrl.text.trim()) ??
+                                      0;
 
-                                if (category.isEmpty || limit <= 0) {
-                                  ScaffoldMessenger.of(ctx).showSnackBar(
-                                    const SnackBar(
-                                      content: Text(
-                                        'Please enter a category and valid limit',
-                                        style: TextStyle(fontFamily: 'Poppins'),
-                                      ),
-                                      backgroundColor: BF.red,
-                                    ),
-                                  );
-                                  return;
-                                }
-
-                                setS(() => isSaving = true);
-
-                                try {
-                                  if (existing != null) {
-                                    await supabase
-                                        .from('budgets')
-                                        .update({
-                                          'category': category,
-                                          'budget_limit': limit,
-                                        })
-                                        .eq(
-                                          'id',
-                                          int.parse(existing['id'] as String),
-                                        )
-                                        .eq('user_id', _userId);
-
-                                    // Use addPostFrameCallback to update after sheet closes
-                                    WidgetsBinding.instance
-                                        .addPostFrameCallback((_) {
-                                          if (mounted && _appState != null) {
-                                            _appState.updateBudget(
-                                              existing['id'] as String,
-                                              {
-                                                ...existing,
-                                                'category': category,
-                                                'limit': limit,
-                                                'period': period,
-                                                'emoji': emoji,
-                                              },
-                                            );
-                                          }
-                                        });
+                                  // Resolve final category name
+                                  final String finalCategory;
+                                  if (isCustomCategory ||
+                                      selectedCategory == 'Others') {
+                                    final custom = customCategoryCtrl.text
+                                        .trim();
+                                    finalCategory = custom.isEmpty
+                                        ? 'Others'
+                                        : custom;
                                   } else {
-                                    final response =
-                                        await supabase.from('budgets').insert({
-                                          'user_id': _userId,
-                                          'category': category,
-                                          'budget_limit': limit,
-                                        }).select();
-
-                                    if (!ctx.mounted) return;
-                                    if ((response as List).isNotEmpty) {
-                                      // Use addPostFrameCallback to update after sheet closes
-                                      WidgetsBinding.instance
-                                          .addPostFrameCallback((_) {
-                                            if (mounted && _appState != null) {
-                                              _appState.addBudget({
-                                                'id': response[0]['id']
-                                                    .toString(),
-                                                'category': category,
-                                                'limit': limit,
-                                                'period': period,
-                                                'emoji': emoji,
-                                              });
-                                            }
-                                          });
-                                    }
+                                    finalCategory = selectedCategory;
                                   }
 
-                                  if (!ctx.mounted) return;
-
-                                  // Close the sheet first
-                                  Navigator.pop(ctx);
-
-                                  // Show snackbar after sheet is closed
-                                  if (ctx.mounted) {
+                                  if (finalCategory.isEmpty || limit <= 0) {
                                     ScaffoldMessenger.of(ctx).showSnackBar(
-                                      SnackBar(
+                                      const SnackBar(
                                         content: Text(
-                                          existing != null
-                                              ? 'Budget updated successfully'
-                                              : 'Budget created successfully',
-                                          style: const TextStyle(
-                                            fontFamily: 'Poppins',
-                                          ),
-                                        ),
-                                        backgroundColor: BF.green,
-                                        behavior: SnackBarBehavior.floating,
-                                      ),
-                                    );
-                                  }
-                                } catch (e) {
-                                  if (ctx.mounted) {
-                                    ScaffoldMessenger.of(ctx).showSnackBar(
-                                      SnackBar(
-                                        content: Text(
-                                          'Error: $e',
-                                          style: const TextStyle(
+                                          'Please select a category and enter a valid limit',
+                                          style: TextStyle(
                                             fontFamily: 'Poppins',
                                           ),
                                         ),
                                         backgroundColor: BF.red,
                                       ),
                                     );
+                                    return;
                                   }
-                                } finally {
-                                  if (ctx.mounted) {
-                                    setS(() => isSaving = false);
+
+                                  setS(() => isSaving = true);
+
+                                  // Derive emoji for the chosen category
+                                  final resolvedEmoji = _categoryEmoji(
+                                    finalCategory,
+                                  );
+
+                                  try {
+                                    if (existing != null) {
+                                      await supabase
+                                          .from('budgets')
+                                          .update({
+                                            'category': finalCategory,
+                                            'budget_limit': limit,
+                                          })
+                                          .eq(
+                                            'id',
+                                            int.parse(existing['id'] as String),
+                                          )
+                                          .eq('user_id', _userId);
+
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback((_) {
+                                            if (mounted) {
+                                              _appState.updateBudget(
+                                                existing['id'] as String,
+                                                {
+                                                  ...existing,
+                                                  'category': finalCategory,
+                                                  'limit': limit,
+                                                  'period': period,
+                                                  'emoji': resolvedEmoji,
+                                                },
+                                              );
+                                            }
+                                          });
+                                    } else {
+                                      final response = await supabase
+                                          .from('budgets')
+                                          .insert({
+                                            'user_id': _userId,
+                                            'category': finalCategory,
+                                            'budget_limit': limit,
+                                          })
+                                          .select();
+
+                                      if (!ctx.mounted) return;
+                                      if ((response as List).isNotEmpty) {
+                                        WidgetsBinding.instance
+                                            .addPostFrameCallback((_) {
+                                              if (mounted) {
+                                                _appState.addBudget({
+                                                  'id': response[0]['id']
+                                                      .toString(),
+                                                  'category': finalCategory,
+                                                  'limit': limit,
+                                                  'period': period,
+                                                  'emoji': resolvedEmoji,
+                                                });
+                                              }
+                                            });
+                                      }
+                                    }
+
+                                    if (!ctx.mounted) return;
+                                    Navigator.pop(ctx);
+
+                                    if (ctx.mounted) {
+                                      ScaffoldMessenger.of(ctx).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            existing != null
+                                                ? 'Budget updated successfully'
+                                                : 'Budget created successfully',
+                                            style: const TextStyle(
+                                              fontFamily: 'Poppins',
+                                            ),
+                                          ),
+                                          backgroundColor: BF.green,
+                                          behavior: SnackBarBehavior.floating,
+                                        ),
+                                      );
+                                    }
+                                  } catch (e) {
+                                    if (ctx.mounted) {
+                                      ScaffoldMessenger.of(ctx).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            'Error: $e',
+                                            style: const TextStyle(
+                                              fontFamily: 'Poppins',
+                                            ),
+                                          ),
+                                          backgroundColor: BF.red,
+                                        ),
+                                      );
+                                    }
+                                  } finally {
+                                    if (ctx.mounted) {
+                                      setS(() => isSaving = false);
+                                    }
                                   }
-                                }
-                              },
-                        child: isSaving
-                            ? const SizedBox(
-                                height: 20,
-                                width: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
+                                },
+                          child: isSaving
+                              ? const SizedBox(
+                                  height: 20,
+                                  width: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : Text(
+                                  existing != null
+                                      ? 'Save Changes'
+                                      : 'Create Budget',
                                 ),
-                              )
-                            : Text(
-                                existing != null
-                                    ? 'Save Changes'
-                                    : 'Create Budget',
-                              ),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
+                      const SizedBox(height: 8),
+                    ],
+                  ),
                 ),
               ),
             );
@@ -1019,11 +1556,27 @@ class _BudgetPageState extends State<BudgetPage> {
         );
       },
     ).whenComplete(() {
-      // Only dispose if sheet hasn't been disposed already
-      if (_isSheetActive) {
-        disposeControllers();
-      }
+      if (_isSheetActive) disposeControllers();
     });
+  }
+
+  // ── Category helpers ──────────────────────────────────────────────────────
+  Color _categoryColor(String label) {
+    try {
+      return _budgetCategories.firstWhere((c) => c['label'] == label)['color']
+          as Color;
+    } catch (_) {
+      return BF.accent;
+    }
+  }
+
+  String _categoryEmoji(String label) {
+    try {
+      return _budgetCategories.firstWhere((c) => c['label'] == label)['emoji']
+          as String;
+    } catch (_) {
+      return '📌';
+    }
   }
 
   Widget _sheetHandle(bool isDark) => Center(
@@ -1035,23 +1588,6 @@ class _BudgetPageState extends State<BudgetPage> {
         borderRadius: BorderRadius.circular(10),
       ),
     ),
-  );
-
-  Widget _emojiBtn(String emoji, bool selected, bool isDark) => Container(
-    width: 44,
-    height: 44,
-    margin: const EdgeInsets.only(right: 8),
-    decoration: BoxDecoration(
-      color: selected
-          ? BF.accent.withOpacity(0.15)
-          : (isDark ? BF.darkSurface : BF.lightBg),
-      borderRadius: BorderRadius.circular(12),
-      border: Border.all(
-        color: selected ? BF.accent : (isDark ? BF.darkBorder : BF.lightBorder),
-        width: selected ? 1.5 : 1,
-      ),
-    ),
-    child: Center(child: Text(emoji, style: const TextStyle(fontSize: 20))),
   );
 
   Widget _field(

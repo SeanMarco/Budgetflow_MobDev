@@ -489,14 +489,14 @@ class _AccountsPageState extends State<AccountsPage> {
     String type = 'Bank';
     String emoji = '🏦';
     Color color = _accountColors[0];
-    const types = ['Cash', 'Bank', 'E-Wallet', 'Credit Card', 'Savings'];
+    const types = ['Cash', 'Bank', 'E-Wallet', 'Debit Card', 'Savings'];
     const emojis = ['🏦', '💵', '📱', '💳', '🏧', '💰', '🪙', '💎'];
     bool isSaving = false;
-    bool _isSheetActive = true;
+    bool isSheetActive = true;
 
     void disposeControllers() {
-      if (_isSheetActive) {
-        _isSheetActive = false;
+      if (isSheetActive) {
+        isSheetActive = false;
         Future.microtask(() {
           if (!nameCtrl.hasListeners) nameCtrl.dispose();
           if (!balanceCtrl.hasListeners) balanceCtrl.dispose();
@@ -514,7 +514,7 @@ class _AccountsPageState extends State<AccountsPage> {
             return PopScope(
               canPop: true,
               onPopInvoked: (didPop) {
-                if (didPop && _isSheetActive) {
+                if (didPop && isSheetActive) {
                   disposeControllers();
                 }
               },
@@ -832,7 +832,7 @@ class _AccountsPageState extends State<AccountsPage> {
         );
       },
     ).whenComplete(() {
-      if (_isSheetActive) {
+      if (isSheetActive) {
         disposeControllers();
       }
     });
@@ -846,11 +846,11 @@ class _AccountsPageState extends State<AccountsPage> {
     String toId = accounts[1]['id'].toString();
     final amountCtrl = TextEditingController();
     bool isProcessing = false;
-    bool _isSheetActive = true;
+    bool isSheetActive = true;
 
     void disposeControllers() {
-      if (_isSheetActive) {
-        _isSheetActive = false;
+      if (isSheetActive) {
+        isSheetActive = false;
         Future.microtask(() {
           if (!amountCtrl.hasListeners) amountCtrl.dispose();
         });
@@ -867,7 +867,7 @@ class _AccountsPageState extends State<AccountsPage> {
             return PopScope(
               canPop: true,
               onPopInvoked: (didPop) {
-                if (didPop && _isSheetActive) {
+                if (didPop && isSheetActive) {
                   disposeControllers();
                 }
               },
@@ -1032,7 +1032,6 @@ class _AccountsPageState extends State<AccountsPage> {
 
                                   final now = DateTime.now().toIso8601String();
 
-                                  // Create transfer transactions WITHOUT is_transfer flag
                                   // For FROM account - use a special category "Transfer-Out"
                                   await supabase.from('transactions').insert({
                                     'user_id': _userId,
@@ -1163,7 +1162,7 @@ class _AccountsPageState extends State<AccountsPage> {
         );
       },
     ).whenComplete(() {
-      if (_isSheetActive) {
+      if (isSheetActive) {
         disposeControllers();
       }
     });

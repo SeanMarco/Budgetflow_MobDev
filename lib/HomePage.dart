@@ -71,6 +71,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   late AnimationController _fabAnimCtrl;
   late AnimationController _pieChartAnimationController;
 
+  // ── Wallet scroll state ───────────────────────────────────────────────────
+  final ScrollController _walletScrollCtrl = ScrollController();
+  int _walletScrollIndex = 0;
+
   final currency = NumberFormat.currency(locale: 'en_PH', symbol: '₱');
 
   String _searchQuery = '';
@@ -85,6 +89,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   String get _userId => supabase.auth.currentUser?.id ?? '';
 
+  // Card width + margin = 160 + 12 = 172
+  static const double _walletCardStep = 172.0;
+
   @override
   void initState() {
     super.initState();
@@ -97,6 +104,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       duration: const Duration(milliseconds: 800),
     )..forward();
     isDarkMode.addListener(_onThemeChanged);
+    _walletScrollCtrl.addListener(_onWalletScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadData());
     _loadPrefs();
   }
@@ -105,9 +113,22 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     if (mounted) setState(() {});
   }
 
+  void _onWalletScroll() {
+    if (!mounted) return;
+    final idx = (_walletScrollCtrl.offset / _walletCardStep).round().clamp(
+      0,
+      (_s.accounts.length - 1).clamp(0, 99),
+    );
+    if (idx != _walletScrollIndex) {
+      setState(() => _walletScrollIndex = idx);
+    }
+  }
+
   @override
   void dispose() {
     isDarkMode.removeListener(_onThemeChanged);
+    _walletScrollCtrl.removeListener(_onWalletScroll);
+    _walletScrollCtrl.dispose();
     _fabAnimCtrl.dispose();
     _pieChartAnimationController.dispose();
     super.dispose();
@@ -1055,8 +1076,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                   final existingId = int.tryParse(
                                     existing['id'].toString(),
                                   );
-                                  if (existingId == null)
+                                  if (existingId == null) {
                                     throw Exception('Invalid transaction id');
+                                  }
                                   await supabase
                                       .from('transactions')
                                       .update({
@@ -1260,14 +1282,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 ),
               ),
               const SizedBox(height: 10),
-              SizedBox(
-                height: 100,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _s.accounts.length,
-                  itemBuilder: (_, i) => _walletCard(_s.accounts[i], isDark),
-                ),
-              ),
+              _walletSection(isDark),
               const SizedBox(height: 14),
             ],
             Row(
@@ -1347,6 +1362,84 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // WALLET SECTION — with native scrollbar
+  // ══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════════════
+  // WALLET SECTION — with themed scrollbar
+  // ══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════════════
+  // WALLET SECTION — with themed scrollbar
+  // ══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════════════
+  // WALLET SECTION — with scrollbar below the wallet cards
+  // ══════════════════════════════════════════════════════════════════════════
+  Widget _walletSection(bool isDark) {
+    final count = _s.accounts.length;
+    if (count == 0) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Wallet cards with scrollbar and bottom padding
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: SizedBox(
+            height: 112,
+            child: Scrollbar(
+              controller: _walletScrollCtrl,
+              thumbVisibility: true,
+              trackVisibility: true,
+              thickness: 4.0,
+              radius: const Radius.circular(2.0),
+              interactive: true,
+              child: ListView.builder(
+                controller: _walletScrollCtrl,
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                itemCount: count,
+                itemBuilder: (_, i) => _walletCard(_s.accounts[i], isDark),
+              ),
+            ),
+          ),
+        ),
+        if (count > 2) ...[
+          Container(
+            alignment: Alignment.centerRight,
+            padding: const EdgeInsets.only(right: 8),
+            child: Icon(
+              Icons.chevron_right_rounded,
+              size: 14,
+              color: isDark
+                  ? Colors.white.withOpacity(0.2)
+                  : Colors.black.withOpacity(0.12),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  // Helper method to build a Scrollbar that blends with the theme
+  Widget buildWalletScrollbar(bool isDark) {
+    return Scrollbar(
+      controller: _walletScrollCtrl,
+      thumbVisibility: true,
+      trackVisibility: true,
+      thickness: 3.0,
+      radius: const Radius.circular(1.5),
+      interactive: true,
+      child: Container(
+        height: 3,
+        color: Colors.transparent,
+        child: const SizedBox.shrink(),
+      ),
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ENHANCED PIE CHART
+  // ══════════════════════════════════════════════════════════════════════════
   Widget _enhancedPieChart(double income, double expense, bool isDark) {
     final total = income + expense;
     final double incomePercent = total > 0 ? (income / total * 100) : 0;
@@ -1396,12 +1489,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       horizontal: 12,
                       vertical: 6,
                     ),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
                         colors: [BF.accent, BF.accentSoft],
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
                       ),
+                      borderRadius: BorderRadius.all(Radius.circular(20)),
                     ),
                     child: Text(
                       DateFormat('MMMM').format(DateTime.now()),
@@ -1606,6 +1700,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // WALLET CARD — enhanced with account count badge + better layout
+  // ══════════════════════════════════════════════════════════════════════════
   Widget _walletCard(Map<String, dynamic> acc, bool isDark) {
     final Color baseColor = _parseColor(acc['color'], BF.accent);
     final balance = acc['balance'] as double;
@@ -1620,14 +1717,21 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: [
-              baseColor.withOpacity(isDark ? 0.25 : 0.15),
-              baseColor.withOpacity(isDark ? 0.10 : 0.06),
+              baseColor.withOpacity(isDark ? 0.28 : 0.18),
+              baseColor.withOpacity(isDark ? 0.12 : 0.07),
             ],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: baseColor.withOpacity(0.3), width: 1.2),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: baseColor.withOpacity(0.35), width: 1.2),
+          boxShadow: [
+            BoxShadow(
+              color: baseColor.withOpacity(isDark ? 0.15 : 0.08),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1636,16 +1740,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             Row(
               children: [
                 Container(
-                  width: 34,
-                  height: 34,
+                  width: 36,
+                  height: 36,
                   decoration: BoxDecoration(
-                    color: baseColor.withOpacity(0.18),
-                    borderRadius: BorderRadius.circular(10),
+                    color: baseColor.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(11),
                   ),
                   alignment: Alignment.center,
                   child: Text(
                     acc['emoji'] as String? ?? '💰',
-                    style: const TextStyle(fontSize: 16),
+                    style: const TextStyle(fontSize: 17),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -1678,13 +1782,24 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
-                Text(
-                  acc['type'] as String? ?? 'Wallet',
-                  style: TextStyle(
-                    fontFamily: 'Poppins',
-                    fontSize: 10,
-                    color: baseColor.withOpacity(0.8),
-                    fontWeight: FontWeight.w500,
+                const SizedBox(height: 2),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: baseColor.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    acc['type'] as String? ?? 'Wallet',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 9,
+                      color: baseColor,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ],
@@ -2309,8 +2424,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(28),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
                 colors: [
                   Color(0xFF1A2F6E),
                   Color(0xFF3B30C4),
@@ -2319,12 +2434,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
-              borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.all(Radius.circular(24)),
               boxShadow: [
                 BoxShadow(
-                  color: BF.accent.withOpacity(0.3),
+                  color: Color(0x4D6C63FF),
                   blurRadius: 24,
-                  offset: const Offset(0, 8),
+                  offset: Offset(0, 8),
                 ),
               ],
             ),
@@ -2818,18 +2933,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
           colors: [Color(0xFF1A2F6E), Color(0xFF3B30C4), Color(0xFF6C63FF)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.all(Radius.circular(24)),
         boxShadow: [
           BoxShadow(
-            color: BF.accent.withOpacity(0.3),
+            color: Color(0x4D6C63FF),
             blurRadius: 28,
-            offset: const Offset(0, 10),
+            offset: Offset(0, 10),
           ),
         ],
       ),
