@@ -11,6 +11,8 @@ import 'ReportsPage.dart';
 import 'RecurringPage.dart';
 import 'AccountsPage.dart';
 import 'SavingsPage.dart';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 SupabaseClient get supabase => Supabase.instance.client;
 
@@ -69,7 +71,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   bool get _isDarkMode => isDarkMode.value;
 
   late AnimationController _fabAnimCtrl;
-  late AnimationController _pieChartAnimationController;
+  late AnimationController _cardAnimCtrl;
 
   final currency = NumberFormat.currency(locale: 'en_PH', symbol: '₱');
 
@@ -85,6 +87,47 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   String get _userId => supabase.auth.currentUser?.id ?? '';
 
+  // ── Theme helpers ──────────────────────────────────────────────────────────
+  Color _bg(bool isDark) => isDark ? BF.darkBg : const Color(0xFFF5F7FA);
+  Color _cardBg(bool isDark) => isDark ? BF.darkCard : Colors.white;
+  Color _primaryText(bool isDark) =>
+      isDark ? Colors.white : const Color(0xFF0F172A);
+  Color _secondaryText(bool isDark) =>
+      isDark ? Colors.white60 : const Color(0xFF64748B);
+  Color _tertiaryText(bool isDark) =>
+      isDark ? Colors.white30 : const Color(0xFF94A3B8);
+  Color _border(bool isDark) =>
+      isDark ? BF.darkBorder : const Color(0xFFE2E8F0);
+
+  BoxDecoration _card(bool isDark, {Color? accent}) => BoxDecoration(
+    color: _cardBg(isDark),
+    borderRadius: BorderRadius.circular(20),
+    border: Border.all(
+      color: accent != null ? accent.withOpacity(0.18) : _border(isDark),
+      width: 1,
+    ),
+    boxShadow: isDark
+        ? [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.2),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ]
+        : [
+            BoxShadow(
+              color: const Color(0xFF64748B).withOpacity(0.07),
+              blurRadius: 20,
+              offset: const Offset(0, 4),
+            ),
+            BoxShadow(
+              color: const Color(0xFF64748B).withOpacity(0.04),
+              blurRadius: 4,
+              offset: const Offset(0, 1),
+            ),
+          ],
+  );
+
   @override
   void initState() {
     super.initState();
@@ -92,9 +135,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       vsync: this,
       duration: const Duration(milliseconds: 300),
     )..forward();
-    _pieChartAnimationController = AnimationController(
+    _cardAnimCtrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 800),
+      duration: const Duration(milliseconds: 600),
     )..forward();
     isDarkMode.addListener(_onThemeChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadData());
@@ -109,7 +152,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void dispose() {
     isDarkMode.removeListener(_onThemeChanged);
     _fabAnimCtrl.dispose();
-    _pieChartAnimationController.dispose();
+    _cardAnimCtrl.dispose();
     super.dispose();
   }
 
@@ -131,24 +174,23 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     if (!mounted) return;
     setState(() => _loading = true);
     final s = AppStateScope.of(context);
-
     try {
+      // Process recurring transactions first
+      await _processRecurringTransactions();
+
       final accountsResponse = await supabase
           .from('accounts')
           .select()
           .eq('user_id', _userId);
-
       final transactionsResponse = await supabase
           .from('transactions')
           .select()
           .eq('user_id', _userId)
           .order('date', ascending: false);
-
       final budgetsResponse = await supabase
           .from('budgets')
           .select()
           .eq('user_id', _userId);
-
       final savingsResponse = await supabase
           .from('savings_goals')
           .select()
@@ -181,7 +223,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           'balance': 0.0,
           'color': '#0EA974',
         }).select();
-
         if (!mounted) return;
         if ((newAccount as List).isNotEmpty) {
           s.accounts.add({
@@ -237,17 +278,124 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              'Failed to load data. Pull to refresh.',
-              style: const TextStyle(fontFamily: 'Poppins'),
+            content: Row(
+              children: [
+                const Icon(
+                  Icons.wifi_off_rounded,
+                  color: Colors.white,
+                  size: 16,
+                ),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    'Failed to load data. Pull to refresh.',
+                    style: TextStyle(fontFamily: 'Poppins', fontSize: 13),
+                  ),
+                ),
+              ],
             ),
             backgroundColor: BF.red,
             behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            margin: const EdgeInsets.all(16),
           ),
         );
       }
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _processRecurringTransactions() async {
+    if (!mounted) return;
+    final s = AppStateScope.read(context);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+
+    try {
+      // Fetch all active recurring transactions that are due
+      final due = await supabase
+          .from('recurring_transactions')
+          .select()
+          .eq('user_id', _userId)
+          .eq('is_active', true)
+          .lte('next_date', today.toIso8601String());
+
+      if ((due as List).isEmpty) return;
+
+      for (final item in due) {
+        final recurringId = item['id'] as int;
+        final amount = (item['amount'] as num).toDouble();
+        final isIncome = item['is_income'] as bool;
+        final category = item['category'] as String? ?? 'General';
+        final title = item['title'] as String;
+        final frequency = item['frequency'] as String;
+        final nextDate = DateTime.parse(item['next_date'] as String);
+
+        // Find the account — use first account as default
+        if (s.accounts.isEmpty) continue;
+        final account = s.accounts.first;
+        final accountIdInt = int.tryParse(account['id'].toString());
+        if (accountIdInt == null) continue;
+
+        final currentBalance = account['balance'] as double;
+        final newBalance = isIncome
+            ? currentBalance + amount
+            : currentBalance - amount;
+
+        // 1. Insert the transaction
+        await supabase.from('transactions').insert({
+          'user_id': _userId,
+          'title': title,
+          'amount': amount,
+          'is_income': isIncome,
+          'category': category,
+          'account_id': accountIdInt,
+          'note': 'Auto-posted from recurring schedule',
+          'date': now.toIso8601String(),
+        });
+
+        // 2. Update account balance
+        await supabase
+            .from('accounts')
+            .update({'balance': newBalance})
+            .eq('id', accountIdInt);
+
+        // 3. Advance next_date based on frequency
+        final DateTime advancedDate = _advanceDate(nextDate, frequency);
+
+        await supabase
+            .from('recurring_transactions')
+            .update({'next_date': advancedDate.toIso8601String()})
+            .eq('id', recurringId);
+      }
+
+      debugPrint('[Recurring] Processed ${due.length} due item(s)');
+    } catch (e) {
+      debugPrint('[Recurring] Error processing recurring transactions: $e');
+    }
+  }
+
+  DateTime _advanceDate(DateTime from, String frequency) {
+    switch (frequency) {
+      case 'Daily':
+        return from.add(const Duration(days: 1));
+      case 'Weekly':
+        return from.add(const Duration(days: 7));
+      case 'Yearly':
+        return DateTime(from.year + 1, from.month, from.day);
+      case 'Monthly':
+      default:
+        // Handle month overflow (e.g. Jan 31 → Feb 28)
+        final nextMonth = from.month == 12 ? 1 : from.month + 1;
+        final nextYear = from.month == 12 ? from.year + 1 : from.year;
+        final lastDayOfNextMonth = DateTime(nextYear, nextMonth + 1, 0).day;
+        final day = from.day > lastDayOfNextMonth
+            ? lastDayOfNextMonth
+            : from.day;
+        return DateTime(nextYear, nextMonth, day);
     }
   }
 
@@ -267,9 +415,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       builder: (_) => Container(
         decoration: BoxDecoration(
           color: isDark ? BF.darkCard : Colors.white,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+          border: Border(top: BorderSide(color: _border(isDark), width: 1)),
         ),
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -281,7 +430,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 fontSize: 18,
                 fontWeight: FontWeight.w700,
                 fontFamily: 'Poppins',
-                color: isDark ? Colors.white : Colors.black87,
+                color: _primaryText(isDark),
               ),
             ),
             const SizedBox(height: 20),
@@ -337,16 +486,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         Navigator.pop(context);
                         final prefs = await SharedPreferences.getInstance();
                         await prefs.remove('profile_image_path');
-                        if (mounted) {
-                          setState(() => _profileImagePath = null);
-                        }
+                        if (mounted) setState(() => _profileImagePath = null);
                       },
                     ),
                   ),
                 ],
               ],
             ),
-            const SizedBox(height: 8),
           ],
         ),
       ),
@@ -364,20 +510,28 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 18),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: color.withOpacity(0.2)),
+          color: color.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: color.withOpacity(0.2), width: 1),
         ),
         child: Column(
           children: [
-            Icon(icon, color: color, size: 28),
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icon, color: color, size: 22),
+            ),
             const SizedBox(height: 8),
             Text(
               label,
               style: TextStyle(
                 fontFamily: 'Poppins',
                 fontWeight: FontWeight.w600,
-                fontSize: 13,
+                fontSize: 12,
                 color: color,
               ),
             ),
@@ -457,18 +611,66 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return fallback;
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // BUILD
+  // ══════════════════════════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
     final isDark = _isDarkMode;
 
     if (_loading) {
       return Scaffold(
-        backgroundColor: isDark ? BF.darkBg : BF.lightBg,
-        body: const Center(child: CircularProgressIndicator(color: BF.accent)),
+        backgroundColor: _bg(isDark),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: BF.tealGradient,
+                  boxShadow: [
+                    BoxShadow(
+                      color: BF.accent.withOpacity(0.3),
+                      blurRadius: 20,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.waterfall_chart_rounded,
+                  color: Colors.white,
+                  size: 26,
+                ),
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  color: BF.accent,
+                  strokeWidth: 2,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                'Loading…',
+                style: TextStyle(
+                  fontFamily: 'Poppins',
+                  fontSize: 13,
+                  color: _secondaryText(isDark),
+                ),
+              ),
+            ],
+          ),
+        ),
       );
     }
+
     return Scaffold(
-      backgroundColor: isDark ? BF.darkBg : BF.lightBg,
+      backgroundColor: _bg(isDark),
       body: SafeArea(child: _page()),
       bottomNavigationBar: _navBar(isDark),
       floatingActionButton: ScaleTransition(
@@ -478,19 +680,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
+  // ── FAB ───────────────────────────────────────────────────────────────────
   Widget _fab() => Container(
     decoration: BoxDecoration(
       borderRadius: BorderRadius.circular(18),
-      gradient: const LinearGradient(
-        colors: [BF.accent, BF.accentSoft],
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-      ),
+      gradient: BF.tealGradient,
       boxShadow: [
         BoxShadow(
           color: BF.accent.withOpacity(0.4),
           blurRadius: 20,
-          offset: const Offset(0, 6),
+          offset: const Offset(0, 8),
         ),
       ],
     ),
@@ -502,58 +701,80 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     ),
   );
 
+  // ── BOTTOM NAV BAR ────────────────────────────────────────────────────────
   Widget _navBar(bool isDark) {
+    final items = [
+      {'icon': Icons.home_rounded, 'label': 'Home'},
+      {'icon': Icons.receipt_long_rounded, 'label': 'Activity'},
+      {'icon': Icons.person_rounded, 'label': 'Profile'},
+    ];
     return Container(
+      height: 68,
       decoration: BoxDecoration(
         color: isDark ? BF.darkSurface : Colors.white,
-        border: Border(
-          top: BorderSide(
-            color: isDark ? BF.darkBorder : BF.lightBorder,
-            width: 1,
-          ),
-        ),
+        border: Border(top: BorderSide(color: _border(isDark), width: 1)),
         boxShadow: isDark
             ? []
             : [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.06),
-                  blurRadius: 24,
-                  offset: const Offset(0, -6),
+                  color: const Color(0xFF0F172A).withOpacity(0.06),
+                  blurRadius: 16,
+                  offset: const Offset(0, -4),
                 ),
               ],
       ),
-      child: BottomNavigationBar(
-        currentIndex: _tab,
-        onTap: (i) => setState(() => _tab = i),
-        selectedItemColor: BF.accent,
-        unselectedItemColor: isDark
-            ? Colors.white.withOpacity(0.3)
-            : Colors.black.withOpacity(0.3),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        selectedLabelStyle: const TextStyle(
-          fontFamily: 'Poppins',
-          fontWeight: FontWeight.w600,
-          fontSize: 11,
-        ),
-        unselectedLabelStyle: const TextStyle(
-          fontFamily: 'Poppins',
-          fontSize: 11,
-        ),
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.dashboard_rounded),
-            label: 'Home',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.receipt_long_rounded),
-            label: 'Activity',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.person_rounded),
-            label: 'Profile',
-          ),
-        ],
+      child: Row(
+        children: List.generate(items.length, (i) {
+          final active = _tab == i;
+          return Expanded(
+            child: GestureDetector(
+              onTap: () => setState(() => _tab = i),
+              behavior: HitTestBehavior.opaque,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeOutCubic,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: active
+                          ? BF.accent.withOpacity(0.1)
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      items[i]['icon'] as IconData,
+                      color: active
+                          ? BF.accent
+                          : (isDark
+                                ? Colors.white.withOpacity(0.3)
+                                : const Color(0xFFCBD5E1)),
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    items[i]['label'] as String,
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 10,
+                      fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                      color: active
+                          ? BF.accent
+                          : (isDark
+                                ? Colors.white.withOpacity(0.3)
+                                : const Color(0xFFCBD5E1)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
       ),
     );
   }
@@ -569,9 +790,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     }
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // NAVIGATION HELPERS
-  // ══════════════════════════════════════════════════════════════════════════
   void _push(Widget page) {
     Navigator.push(context, MaterialPageRoute(builder: (_) => page));
   }
@@ -584,7 +802,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // ADD / EDIT TRANSACTION SHEET (RESPONSIVE)
+  // TRANSACTION SHEET
   // ══════════════════════════════════════════════════════════════════════════
   void _showTxSheet(BuildContext context, {Map<String, dynamic>? existing}) {
     final isDark = _isDarkMode;
@@ -618,7 +836,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     bool isCustomCategory =
         selectedCategory.isNotEmpty &&
         TxCategories.findByLabel(selectedCategory) == null;
-
     bool isSaving = false;
 
     showModalBottomSheet(
@@ -633,10 +850,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               borderRadius: const BorderRadius.vertical(
                 top: Radius.circular(28),
               ),
+              border: Border(top: BorderSide(color: _border(isDark), width: 1)),
             ),
             padding: EdgeInsets.only(
-              left: 16,
-              right: 16,
+              left: 20,
+              right: 20,
               top: 16,
               bottom:
                   MediaQuery.of(ctx).viewInsets.bottom +
@@ -649,25 +867,51 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 children: [
                   Center(child: _sheetHandle()),
                   SizedBox(height: isSmallScreen ? 12 : 20),
-                  Text(
-                    existing != null ? 'Edit Transaction' : 'New Transaction',
-                    style: TextStyle(
-                      fontSize: isSmallScreen ? 18 : 20,
-                      fontWeight: FontWeight.w700,
-                      fontFamily: 'Poppins',
-                      color: isDark ? Colors.white : Colors.black87,
-                    ),
+                  Row(
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          gradient: BF.tealGradient,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(
+                          existing != null
+                              ? Icons.edit_rounded
+                              : Icons.add_rounded,
+                          color: Colors.white,
+                          size: 18,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        existing != null
+                            ? 'Edit Transaction'
+                            : 'New Transaction',
+                        style: TextStyle(
+                          fontSize: isSmallScreen ? 18 : 20,
+                          fontWeight: FontWeight.w700,
+                          fontFamily: 'Poppins',
+                          color: _primaryText(isDark),
+                        ),
+                      ),
+                    ],
                   ),
-                  SizedBox(height: isSmallScreen ? 12 : 20),
+                  SizedBox(height: isSmallScreen ? 14 : 20),
                   Container(
                     height: isSmallScreen ? 44 : 50,
+                    padding: const EdgeInsets.all(4),
                     decoration: BoxDecoration(
-                      color: isDark ? BF.darkSurface : BF.lightBg,
+                      color: isDark
+                          ? Colors.white.withOpacity(0.05)
+                          : const Color(0xFFF1F5F9),
                       borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: _border(isDark), width: 1),
                     ),
                     child: Row(
                       children: [
-                        _toggle(
+                        _txToggle(
                           'Income',
                           true,
                           isIncome,
@@ -676,7 +920,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           () => setS(() => isIncome = true),
                           isSmallScreen: isSmallScreen,
                         ),
-                        _toggle(
+                        _txToggle(
                           'Expense',
                           false,
                           isIncome,
@@ -688,7 +932,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       ],
                     ),
                   ),
-                  SizedBox(height: isSmallScreen ? 10 : 14),
+                  SizedBox(height: isSmallScreen ? 12 : 16),
                   _sheetField(
                     amountCtrl,
                     'Amount',
@@ -697,40 +941,41 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     type: const TextInputType.numberWithOptions(decimal: true),
                     isSmallScreen: isSmallScreen,
                   ),
-                  SizedBox(height: isSmallScreen ? 8 : 12),
+                  SizedBox(height: isSmallScreen ? 10 : 12),
                   _sheetField(
                     noteCtrl,
                     'Title / Note',
                     isDark,
                     isSmallScreen: isSmallScreen,
                   ),
-                  SizedBox(height: isSmallScreen ? 8 : 12),
+                  SizedBox(height: isSmallScreen ? 12 : 16),
                   Text(
                     'Category',
                     style: TextStyle(
                       fontFamily: 'Poppins',
                       fontSize: isSmallScreen ? 12 : 13,
                       fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white70 : Colors.black54,
+                      color: _secondaryText(isDark),
                     ),
                   ),
-                  SizedBox(height: isSmallScreen ? 6 : 8),
+                  SizedBox(height: isSmallScreen ? 8 : 10),
                   if (selectedCategory.isNotEmpty)
                     Container(
-                      margin: const EdgeInsets.only(bottom: 8),
+                      margin: const EdgeInsets.only(bottom: 10),
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 6,
+                        horizontal: 12,
+                        vertical: 7,
                       ),
                       decoration: BoxDecoration(
                         color: TxCategories.colorFor(
                           selectedCategory,
-                        ).withOpacity(0.12),
-                        borderRadius: BorderRadius.circular(10),
+                        ).withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
                         border: Border.all(
                           color: TxCategories.colorFor(
                             selectedCategory,
-                          ).withOpacity(0.35),
+                          ).withOpacity(0.3),
+                          width: 1,
                         ),
                       ),
                       child: Row(
@@ -750,17 +995,27 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                               color: TxCategories.colorFor(selectedCategory),
                             ),
                           ),
-                          const SizedBox(width: 4),
+                          const SizedBox(width: 6),
                           GestureDetector(
                             onTap: () => setS(() {
                               selectedCategory = '';
                               isCustomCategory = false;
                               categoryCtrl.clear();
                             }),
-                            child: Icon(
-                              Icons.close_rounded,
-                              size: 12,
-                              color: TxCategories.colorFor(selectedCategory),
+                            child: Container(
+                              width: 16,
+                              height: 16,
+                              decoration: BoxDecoration(
+                                color: TxCategories.colorFor(
+                                  selectedCategory,
+                                ).withOpacity(0.15),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(
+                                Icons.close_rounded,
+                                size: 10,
+                                color: TxCategories.colorFor(selectedCategory),
+                              ),
                             ),
                           ),
                         ],
@@ -774,7 +1029,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       final emoji = cat['emoji'] as String;
                       final color = cat['color'] as Color;
                       final isSelected = selectedCategory == label;
-
                       if (label == 'Others') {
                         return GestureDetector(
                           onTap: () => setS(() {
@@ -785,18 +1039,19 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           child: AnimatedContainer(
                             duration: const Duration(milliseconds: 160),
                             padding: EdgeInsets.symmetric(
-                              horizontal: isSmallScreen ? 8 : 12,
+                              horizontal: isSmallScreen ? 9 : 12,
                               vertical: isSmallScreen ? 5 : 7,
                             ),
                             decoration: BoxDecoration(
                               color: isSelected
                                   ? color
                                   : color.withOpacity(0.08),
-                              borderRadius: BorderRadius.circular(18),
+                              borderRadius: BorderRadius.circular(20),
                               border: Border.all(
                                 color: isSelected
                                     ? color
-                                    : color.withOpacity(0.25),
+                                    : color.withOpacity(0.22),
+                                width: 1,
                               ),
                             ),
                             child: Row(
@@ -821,7 +1076,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           ),
                         );
                       }
-
                       return GestureDetector(
                         onTap: () => setS(() {
                           selectedCategory = label;
@@ -831,16 +1085,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 160),
                           padding: EdgeInsets.symmetric(
-                            horizontal: isSmallScreen ? 8 : 12,
+                            horizontal: isSmallScreen ? 9 : 12,
                             vertical: isSmallScreen ? 5 : 7,
                           ),
                           decoration: BoxDecoration(
                             color: isSelected ? color : color.withOpacity(0.08),
-                            borderRadius: BorderRadius.circular(18),
+                            borderRadius: BorderRadius.circular(20),
                             border: Border.all(
                               color: isSelected
                                   ? color
-                                  : color.withOpacity(0.25),
+                                  : color.withOpacity(0.22),
+                              width: 1,
                             ),
                           ),
                           child: Row(
@@ -864,7 +1119,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     }).toList(),
                   ),
                   if (isCustomCategory || selectedCategory == 'Others') ...[
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 10),
                     _sheetField(
                       categoryCtrl,
                       'Type your category…',
@@ -872,16 +1127,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       isSmallScreen: isSmallScreen,
                     ),
                   ],
-                  SizedBox(height: isSmallScreen ? 10 : 14),
+                  SizedBox(height: isSmallScreen ? 12 : 16),
                   if (appState.accounts.isNotEmpty)
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
                       decoration: BoxDecoration(
-                        color: isDark ? BF.darkSurface : BF.lightBg,
+                        color: isDark
+                            ? BF.darkSurface
+                            : const Color(0xFFF8FAFC),
                         borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: isDark ? BF.darkBorder : BF.lightBorder,
-                        ),
+                        border: Border.all(color: _border(isDark), width: 1),
                       ),
                       child: DropdownButtonHideUnderline(
                         child: DropdownButton<String>(
@@ -894,14 +1149,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                             style: TextStyle(
                               fontFamily: 'Poppins',
                               fontSize: isSmallScreen ? 12 : 14,
-                              color: isDark ? Colors.white54 : Colors.black54,
+                              color: _secondaryText(isDark),
                             ),
                           ),
                           dropdownColor: isDark ? BF.darkCard : Colors.white,
                           style: TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: isSmallScreen ? 12 : 14,
-                            color: isDark ? Colors.white : Colors.black87,
+                            color: _primaryText(isDark),
+                          ),
+                          icon: Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            color: _secondaryText(isDark),
                           ),
                           items: appState.accounts.map((a) {
                             return DropdownMenuItem<String>(
@@ -912,7 +1171,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                     a['emoji'] as String? ?? '💰',
                                     style: const TextStyle(fontSize: 14),
                                   ),
-                                  const SizedBox(width: 6),
+                                  const SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
                                       a['name'] as String,
@@ -924,12 +1183,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                   ),
                                   const SizedBox(width: 4),
                                   Text(
-                                    (a['balance'] as double).toStringAsFixed(0),
+                                    currency.format(a['balance'] as double),
                                     style: TextStyle(
                                       fontSize: isSmallScreen ? 10 : 11,
-                                      color: isDark
-                                          ? Colors.white38
-                                          : Colors.black38,
+                                      fontFamily: 'Poppins',
+                                      color: _tertiaryText(isDark),
                                     ),
                                   ),
                                 ],
@@ -937,35 +1195,33 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                             );
                           }).toList(),
                           onChanged: (v) {
-                            if (v != null) {
-                              setS(() => localAccountId = v);
-                            }
+                            if (v != null) setS(() => localAccountId = v);
                           },
                         ),
                       ),
                     )
                   else
                     Container(
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
-                        color: BF.red.withOpacity(0.1),
+                        color: BF.red.withOpacity(0.08),
                         borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: BF.red.withOpacity(0.3)),
+                        border: Border.all(color: BF.red.withOpacity(0.25)),
                       ),
                       child: Row(
                         children: [
                           const Icon(
-                            Icons.warning_rounded,
+                            Icons.warning_amber_rounded,
                             color: BF.red,
                             size: 16,
                           ),
-                          const SizedBox(width: 8),
+                          const SizedBox(width: 10),
                           const Expanded(
                             child: Text(
                               'No accounts found. Please create an account first.',
                               style: TextStyle(
                                 fontFamily: 'Poppins',
-                                fontSize: 11,
+                                fontSize: 12,
                                 color: BF.red,
                               ),
                             ),
@@ -973,182 +1229,241 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         ],
                       ),
                     ),
-                  SizedBox(height: isSmallScreen ? 16 : 20),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: BF.accent,
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        padding: EdgeInsets.symmetric(
-                          vertical: isSmallScreen ? 12 : 15,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        textStyle: TextStyle(
-                          fontFamily: 'Poppins',
-                          fontWeight: FontWeight.w600,
-                          fontSize: isSmallScreen ? 13 : 15,
-                        ),
-                      ),
-                      onPressed: isSaving
-                          ? null
-                          : () async {
-                              final rawAmount = amountCtrl.text.trim();
-                              final amount = double.tryParse(rawAmount) ?? 0;
-                              if (amount <= 0) {
+                  SizedBox(height: isSmallScreen ? 18 : 22),
+                  GestureDetector(
+                    onTap: isSaving
+                        ? null
+                        : () async {
+                            final rawAmount = amountCtrl.text.trim();
+                            final amount = double.tryParse(rawAmount) ?? 0;
+                            if (amount <= 0) {
+                              ScaffoldMessenger.of(ctx).showSnackBar(
+                                SnackBar(
+                                  content: const Text(
+                                    'Please enter a valid positive amount',
+                                    style: TextStyle(fontFamily: 'Poppins'),
+                                  ),
+                                  backgroundColor: BF.red,
+                                  behavior: SnackBarBehavior.floating,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  margin: const EdgeInsets.all(16),
+                                  duration: const Duration(seconds: 2),
+                                ),
+                              );
+                              return;
+                            }
+                            if (localAccountId.isEmpty) {
+                              ScaffoldMessenger.of(ctx).showSnackBar(
+                                SnackBar(
+                                  content: const Text(
+                                    'Please select an account',
+                                    style: TextStyle(fontFamily: 'Poppins'),
+                                  ),
+                                  backgroundColor: BF.red,
+                                  behavior: SnackBarBehavior.floating,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  margin: const EdgeInsets.all(16),
+                                  duration: const Duration(seconds: 2),
+                                ),
+                              );
+                              return;
+                            }
+                            final finalCategory =
+                                (selectedCategory == 'Others' ||
+                                    isCustomCategory)
+                                ? (categoryCtrl.text.trim().isEmpty
+                                      ? 'Others'
+                                      : categoryCtrl.text.trim())
+                                : (selectedCategory.isEmpty
+                                      ? (categoryCtrl.text.trim().isEmpty
+                                            ? 'General'
+                                            : categoryCtrl.text.trim())
+                                      : selectedCategory);
+                            setS(() => isSaving = true);
+                            final title = noteCtrl.text.trim().isEmpty
+                                ? (isIncome ? 'Income' : 'Expense')
+                                : noteCtrl.text.trim();
+                            final now = DateTime.now();
+                            final dateStr = now.toIso8601String();
+                            final accountIdInt = int.tryParse(localAccountId);
+                            if (accountIdInt == null) {
+                              ScaffoldMessenger.of(ctx).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Invalid account selected'),
+                                  backgroundColor: BF.red,
+                                ),
+                              );
+                              setS(() => isSaving = false);
+                              return;
+                            }
+                            try {
+                              if (existing != null) {
+                                final existingId = int.tryParse(
+                                  existing['id'].toString(),
+                                );
+                                if (existingId == null) {
+                                  throw Exception('Invalid transaction id');
+                                }
+                                await supabase
+                                    .from('transactions')
+                                    .update({
+                                      'title': title,
+                                      'amount': amount,
+                                      'is_income': isIncome,
+                                      'category': finalCategory,
+                                      'account_id': accountIdInt,
+                                      'note': noteCtrl.text.trim(),
+                                      'date': dateStr,
+                                    })
+                                    .eq('id', existingId);
+                              } else {
+                                await supabase.from('transactions').insert({
+                                  'user_id': _userId,
+                                  'title': title,
+                                  'amount': amount,
+                                  'is_income': isIncome,
+                                  'category': finalCategory,
+                                  'account_id': accountIdInt,
+                                  'note': noteCtrl.text.trim(),
+                                  'date': dateStr,
+                                });
+                                final account = appState.accounts.firstWhere(
+                                  (a) => a['id'].toString() == localAccountId,
+                                );
+                                final currentBalance =
+                                    account['balance'] as double;
+                                final newBalance = isIncome
+                                    ? currentBalance + amount
+                                    : currentBalance - amount;
+                                await supabase
+                                    .from('accounts')
+                                    .update({'balance': newBalance})
+                                    .eq('id', accountIdInt);
+                              }
+                              await _loadData();
+                              if (mounted) setState(() {});
+                              if (ctx.mounted) {
                                 ScaffoldMessenger.of(ctx).showSnackBar(
-                                  const SnackBar(
+                                  SnackBar(
+                                    content: Row(
+                                      children: [
+                                        const Icon(
+                                          Icons.check_circle_rounded,
+                                          color: Colors.white,
+                                          size: 16,
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Text(
+                                          existing != null
+                                              ? 'Transaction updated!'
+                                              : 'Transaction added!',
+                                          style: const TextStyle(
+                                            fontFamily: 'Poppins',
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    backgroundColor: BF.green,
+                                    behavior: SnackBarBehavior.floating,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                    ),
+                                    margin: const EdgeInsets.all(16),
+                                    duration: const Duration(seconds: 2),
+                                  ),
+                                );
+                                Navigator.pop(ctx);
+                              }
+                            } catch (e) {
+                              if (ctx.mounted) {
+                                ScaffoldMessenger.of(ctx).showSnackBar(
+                                  SnackBar(
                                     content: Text(
-                                      'Please enter a valid positive amount',
-                                    ),
-                                    backgroundColor: BF.red,
-                                    duration: Duration(seconds: 2),
-                                  ),
-                                );
-                                return;
-                              }
-                              if (localAccountId.isEmpty) {
-                                ScaffoldMessenger.of(ctx).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('Please select an account'),
-                                    backgroundColor: BF.red,
-                                    duration: Duration(seconds: 2),
-                                  ),
-                                );
-                                return;
-                              }
-
-                              final finalCategory =
-                                  (selectedCategory == 'Others' ||
-                                      isCustomCategory)
-                                  ? (categoryCtrl.text.trim().isEmpty
-                                        ? 'Others'
-                                        : categoryCtrl.text.trim())
-                                  : (selectedCategory.isEmpty
-                                        ? (categoryCtrl.text.trim().isEmpty
-                                              ? 'General'
-                                              : categoryCtrl.text.trim())
-                                        : selectedCategory);
-
-                              setS(() => isSaving = true);
-
-                              final title = noteCtrl.text.trim().isEmpty
-                                  ? (isIncome ? 'Income' : 'Expense')
-                                  : noteCtrl.text.trim();
-
-                              final now = DateTime.now();
-                              final dateStr = now.toIso8601String();
-                              final accountIdInt = int.tryParse(localAccountId);
-                              if (accountIdInt == null) {
-                                ScaffoldMessenger.of(ctx).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('Invalid account selected'),
-                                    backgroundColor: BF.red,
-                                  ),
-                                );
-                                setS(() => isSaving = false);
-                                return;
-                              }
-
-                              try {
-                                if (existing != null) {
-                                  final existingId = int.tryParse(
-                                    existing['id'].toString(),
-                                  );
-                                  if (existingId == null)
-                                    throw Exception('Invalid transaction id');
-                                  await supabase
-                                      .from('transactions')
-                                      .update({
-                                        'title': title,
-                                        'amount': amount,
-                                        'is_income': isIncome,
-                                        'category': finalCategory,
-                                        'account_id': accountIdInt,
-                                        'note': noteCtrl.text.trim(),
-                                        'date': dateStr,
-                                      })
-                                      .eq('id', existingId);
-                                } else {
-                                  await supabase.from('transactions').insert({
-                                    'user_id': _userId,
-                                    'title': title,
-                                    'amount': amount,
-                                    'is_income': isIncome,
-                                    'category': finalCategory,
-                                    'account_id': accountIdInt,
-                                    'note': noteCtrl.text.trim(),
-                                    'date': dateStr,
-                                  });
-
-                                  final account = appState.accounts.firstWhere(
-                                    (a) => a['id'].toString() == localAccountId,
-                                  );
-                                  final currentBalance =
-                                      account['balance'] as double;
-                                  final newBalance = isIncome
-                                      ? currentBalance + amount
-                                      : currentBalance - amount;
-
-                                  await supabase
-                                      .from('accounts')
-                                      .update({'balance': newBalance})
-                                      .eq('id', accountIdInt);
-                                }
-
-                                await _loadData();
-
-                                if (mounted) {
-                                  setState(() {});
-                                }
-
-                                if (ctx.mounted) {
-                                  ScaffoldMessenger.of(ctx).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        existing != null
-                                            ? 'Transaction updated!'
-                                            : 'Transaction added!',
+                                      'Error: $e',
+                                      style: const TextStyle(
+                                        fontFamily: 'Poppins',
+                                        fontSize: 13,
                                       ),
-                                      backgroundColor: BF.green,
-                                      duration: const Duration(seconds: 2),
                                     ),
-                                  );
-                                  Navigator.pop(ctx);
-                                }
-                              } catch (e) {
-                                if (ctx.mounted) {
-                                  ScaffoldMessenger.of(ctx).showSnackBar(
-                                    SnackBar(
-                                      content: Text('Error: $e'),
-                                      backgroundColor: BF.red,
-                                      duration: const Duration(seconds: 3),
+                                    backgroundColor: BF.red,
+                                    behavior: SnackBarBehavior.floating,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14),
                                     ),
-                                  );
-                                }
-                              } finally {
-                                if (ctx.mounted) {
-                                  setS(() => isSaving = false);
-                                }
+                                    margin: const EdgeInsets.all(16),
+                                    duration: const Duration(seconds: 3),
+                                  ),
+                                );
                               }
-                            },
-                      child: isSaving
-                          ? const SizedBox(
-                              height: 20,
-                              width: 20,
-                              child: CircularProgressIndicator(
-                                color: Colors.white,
-                                strokeWidth: 2,
+                            } finally {
+                              if (ctx.mounted) setS(() => isSaving = false);
+                            }
+                          },
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      width: double.infinity,
+                      height: isSmallScreen ? 50 : 56,
+                      decoration: BoxDecoration(
+                        gradient: isSaving ? null : BF.tealGradient,
+                        color: isSaving
+                            ? (isDark
+                                  ? Colors.white.withOpacity(0.08)
+                                  : const Color(0xFFE2E8F0))
+                            : null,
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: isSaving
+                            ? []
+                            : [
+                                BoxShadow(
+                                  color: BF.accent.withOpacity(0.35),
+                                  blurRadius: 16,
+                                  offset: const Offset(0, 6),
+                                ),
+                              ],
+                      ),
+                      child: Center(
+                        child: isSaving
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.5,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    BF.accent,
+                                  ),
+                                ),
+                              )
+                            : Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    existing != null
+                                        ? Icons.check_rounded
+                                        : Icons.add_rounded,
+                                    color: Colors.white,
+                                    size: 18,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    existing != null
+                                        ? 'Save Changes'
+                                        : 'Add Transaction',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontFamily: 'Poppins',
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 15,
+                                      letterSpacing: 0.2,
+                                    ),
+                                  ),
+                                ],
                               ),
-                            )
-                          : Text(
-                              existing != null
-                                  ? 'Save Changes'
-                                  : 'Add Transaction',
-                            ),
+                      ),
                     ),
                   ),
                 ],
@@ -1161,459 +1476,439 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // DASHBOARD
+  // DASHBOARD — clean financial layout
   // ══════════════════════════════════════════════════════════════════════════
   Widget _dashboard() {
     final isDark = _isDarkMode;
-    double income = 0, expense = 0;
-    final Map<String, double> catTotals = {};
-    for (final tx in _s.transactions) {
-      if (tx['isTransfer'] == true) continue;
-      if (tx['isIncome'] as bool) {
-        income += tx['amount'] as double;
-      } else {
-        expense += tx['amount'] as double;
-        final c = tx['category'] as String;
-        catTotals[c] = (catTotals[c] ?? 0) + (tx['amount'] as double);
-      }
-    }
     final monthStats = _thisMonthStats;
 
     return RefreshIndicator(
       color: BF.accent,
+      backgroundColor: isDark ? BF.darkCard : Colors.white,
       onRefresh: _loadData,
       child: SingleChildScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Hi, ${widget.username.isNotEmpty ? widget.username.split(' ')[0] : 'User'} 👋',
-                      style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.w700,
-                        fontFamily: 'Poppins',
-                        color: isDark ? Colors.white : BF.primary,
+            // ── Top header bar ────────────────────────────────────────────
+            _dashboardHeader(isDark),
+
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 20),
+
+                  // ── Balance hero card ──────────────────────────────────
+                  _balanceCard(isDark, monthStats),
+                  const SizedBox(height: 20),
+
+                  // ── Month income / expense pills ───────────────────────
+                  _monthFlowRow(isDark, monthStats),
+                  const SizedBox(height: 24),
+
+                  // ── Wallets horizontal scroll ──────────────────────────
+                  if (_s.accounts.isNotEmpty) ...[
+                    _sectionHeader(
+                      'Accounts',
+                      isDark,
+                      action: _seeAllBtn(
+                        'Manage',
+                        () => _pushAndReload(const AccountsPage()),
                       ),
                     ),
-                    Text(
-                      'Your finance overview',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontFamily: 'Poppins',
-                        color: isDark
-                            ? Colors.white.withOpacity(0.45)
-                            : Colors.black.withOpacity(0.4),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      height: 100,
+                      child: ListView.builder(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: _s.accounts.length,
+                        itemBuilder: (_, i) =>
+                            _accountPill(_s.accounts[i], isDark),
                       ),
                     ),
+                    const SizedBox(height: 24),
                   ],
-                ),
-                Row(
-                  children: [
-                    GestureDetector(
-                      onTap: () => _saveThemePref(!_isDarkMode),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 300),
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: isDark
-                              ? Colors.white.withOpacity(0.08)
-                              : Colors.black.withOpacity(0.05),
-                          borderRadius: BorderRadius.circular(13),
-                          border: Border.all(
-                            color: isDark ? BF.darkBorder : BF.lightBorder,
-                          ),
-                        ),
-                        child: Icon(
-                          isDark
-                              ? Icons.wb_sunny_rounded
-                              : Icons.nightlight_round,
-                          color: isDark ? Colors.amber : BF.accent,
-                          size: 20,
-                        ),
+
+                  // ── Budget progress section ────────────────────────────
+                  if (_s.budgets.isNotEmpty) ...[
+                    _sectionHeader(
+                      'Budget Tracker',
+                      isDark,
+                      action: _seeAllBtn(
+                        'View All',
+                        () => _pushAndReload(const BudgetPage()),
                       ),
                     ),
-                    const SizedBox(width: 10),
-                    GestureDetector(
-                      onTap: () => setState(() => _tab = 2),
-                      child: _avatarWidget(widget.username, size: 44),
-                    ),
+                    const SizedBox(height: 12),
+                    _budgetProgressList(isDark),
+                    const SizedBox(height: 24),
                   ],
-                ),
-              ],
-            ),
-            const SizedBox(height: 22),
-            _balanceCard(isDark),
-            const SizedBox(height: 14),
-            if (_s.accounts.isNotEmpty) ...[
-              _sectionHead(
-                'My Wallets',
-                isDark,
-                action: _viewAll(
-                  'Manage',
-                  () => _pushAndReload(const AccountsPage()),
-                ),
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                height: 100,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _s.accounts.length,
-                  itemBuilder: (_, i) => _walletCard(_s.accounts[i], isDark),
-                ),
-              ),
-              const SizedBox(height: 14),
-            ],
-            Row(
-              children: [
-                Expanded(child: _summaryTile('Income', income, true, isDark)),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _summaryTile('Expenses', expense, false, isDark),
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            _thisMonthCard(monthStats, isDark),
-            const SizedBox(height: 18),
-            _featureGrid(isDark),
-            const SizedBox(height: 18),
-            _budgetAlerts(isDark),
-            if (income > 0 || expense > 0) ...[
-              _sectionHead('Financial Overview', isDark),
-              const SizedBox(height: 12),
-              _enhancedPieChart(income, expense, isDark),
-              const SizedBox(height: 18),
-            ],
-            if (catTotals.isNotEmpty) ...[
-              _sectionHead('Spending Breakdown', isDark),
-              const SizedBox(height: 12),
-              SizedBox(
-                height: 110,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  children: catTotals.entries.map((e) {
-                    final pct = expense > 0
-                        ? (e.value / expense * 100).toStringAsFixed(0)
-                        : '0';
-                    return _catChip(e.key, pct, isDark);
-                  }).toList(),
-                ),
-              ),
-              const SizedBox(height: 18),
-            ],
-            if (_s.savingsGoals.isNotEmpty) ...[
-              _sectionHead(
-                'Savings Goals',
-                isDark,
-                action: _viewAll(
-                  'View All',
-                  () => _pushAndReload(const SavingsPage()),
-                ),
-              ),
-              const SizedBox(height: 12),
-              ..._s.savingsGoals.take(2).map((g) => _goalMini(g, isDark)),
-              const SizedBox(height: 18),
-            ],
-            _sectionHead(
-              'Recent Transactions',
-              isDark,
-              action: _s.transactions.isNotEmpty
-                  ? _viewAll('See All', () => setState(() => _tab = 1))
-                  : null,
-            ),
-            const SizedBox(height: 12),
-            _s.transactions.isEmpty
-                ? _emptyState(
+
+                  // ── Savings goals ──────────────────────────────────────
+                  if (_s.savingsGoals.isNotEmpty) ...[
+                    _sectionHeader(
+                      'Savings Goals',
+                      isDark,
+                      action: _seeAllBtn(
+                        'View All',
+                        () => _pushAndReload(const SavingsPage()),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ..._s.savingsGoals
+                        .take(2)
+                        .map((g) => _savingsGoalRow(g, isDark)),
+                    const SizedBox(height: 24),
+                  ],
+
+                  // ── Navigation shortcuts ───────────────────────────────
+                  _featureRow(isDark),
+                  const SizedBox(height: 24),
+
+                  // ── Recent transactions ────────────────────────────────
+                  _sectionHeader(
+                    'Recent Transactions',
                     isDark,
-                    'No transactions yet',
-                    Icons.receipt_long_outlined,
-                  )
-                : Column(
-                    children: _s.transactions
-                        .take(5)
-                        .map((tx) => _txTile(tx, isDark))
-                        .toList(),
+                    action: _s.transactions.isNotEmpty
+                        ? _seeAllBtn('See All', () => setState(() => _tab = 1))
+                        : null,
                   ),
+                  const SizedBox(height: 12),
+                  _s.transactions.isEmpty
+                      ? _emptyState(
+                          isDark,
+                          'No transactions yet',
+                          Icons.receipt_long_outlined,
+                        )
+                      : Column(
+                          children: _s.transactions
+                              .take(5)
+                              .map((tx) => _txTile(tx, isDark))
+                              .toList(),
+                        ),
+                  const SizedBox(height: 100),
+                ],
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _enhancedPieChart(double income, double expense, bool isDark) {
-    final total = income + expense;
-    final double incomePercent = total > 0 ? (income / total * 100) : 0;
-    final double expensePercent = total > 0 ? (expense / total * 100) : 0;
-
-    return AnimatedBuilder(
-      animation: _pieChartAnimationController,
-      builder: (context, child) {
-        final animationValue = Curves.easeOutCubic.transform(
-          _pieChartAnimationController.value,
-        );
-        return Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: isDark
-                  ? [BF.darkCard, BF.darkSurface]
-                  : [Colors.white, BF.lightBg],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            borderRadius: BorderRadius.circular(24),
-            boxShadow: [
-              BoxShadow(
-                color: BF.accent.withOpacity(0.1),
-                blurRadius: 20,
-                offset: const Offset(0, 8),
+  // ── Top greeting bar ──────────────────────────────────────────────────────
+  Widget _dashboardHeader(bool isDark) {
+    final firstName = widget.username.isNotEmpty
+        ? widget.username.split(' ')[0]
+        : 'User';
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+      decoration: BoxDecoration(
+        color: isDark ? BF.darkBg : const Color(0xFFF5F7FA),
+        border: Border(bottom: BorderSide(color: _border(isDark), width: 1)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '${_getGreeting()}, $firstName 👋',
+                style: TextStyle(
+                  fontFamily: 'Poppins',
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                  color: _primaryText(isDark),
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                DateFormat('EEEE, MMM d').format(DateTime.now()),
+                style: TextStyle(
+                  fontFamily: 'Poppins',
+                  fontSize: 12,
+                  color: _secondaryText(isDark),
+                ),
               ),
             ],
           ),
-          child: Column(
+          Row(
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Income vs Expenses',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                      fontFamily: 'Poppins',
-                      color: isDark ? Colors.white : Colors.black87,
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [BF.accent, BF.accentSoft],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                    ),
-                    child: Text(
-                      DateFormat('MMMM').format(DateTime.now()),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        fontFamily: 'Poppins',
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              Stack(
-                alignment: Alignment.center,
-                children: [
-                  Container(
-                    width: 200,
-                    height: 200,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: BF.accent.withOpacity(0.15),
-                          blurRadius: 30,
-                          spreadRadius: 10,
-                        ),
-                      ],
-                    ),
-                  ),
-                  SizedBox(
-                    width: 180,
-                    height: 180,
-                    child: CustomPaint(
-                      painter: _DonutChartPainter(
-                        incomePercent: incomePercent * animationValue,
-                        expensePercent: expensePercent * animationValue,
-                        incomeColor: BF.green,
-                        expenseColor: BF.red,
-                      ),
-                    ),
-                  ),
-                  Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      TweenAnimationBuilder<double>(
-                        duration: const Duration(milliseconds: 800),
-                        curve: Curves.easeOutCubic,
-                        tween: Tween(begin: 0, end: total),
-                        builder: (context, value, child) => Text(
-                          currency.format(value),
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w800,
-                            fontFamily: 'Poppins',
-                            color: isDark ? Colors.white : Colors.black87,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Total Flow',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontFamily: 'Poppins',
-                          color: isDark ? Colors.white38 : Colors.black38,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  _legendItem(
-                    color: BF.green,
-                    label: 'Income',
-                    value: income,
-                    percent: incomePercent,
-                    isDark: isDark,
-                  ),
-                  const SizedBox(width: 40),
-                  _legendItem(
-                    color: BF.red,
-                    label: 'Expense',
-                    value: expense,
-                    percent: expensePercent,
-                    isDark: isDark,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              if (total > 0)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
+              GestureDetector(
+                onTap: () => _saveThemePref(!_isDarkMode),
+                child: Container(
+                  width: 38,
+                  height: 38,
                   decoration: BoxDecoration(
-                    color: (income > expense ? BF.green : BF.red).withOpacity(
-                      0.1,
-                    ),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: (income > expense ? BF.green : BF.red).withOpacity(
-                        0.3,
-                      ),
-                    ),
+                    color: isDark
+                        ? Colors.white.withOpacity(0.07)
+                        : Colors.white,
+                    borderRadius: BorderRadius.circular(11),
+                    border: Border.all(color: _border(isDark), width: 1),
                   ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        income > expense
-                            ? Icons.trending_up_rounded
-                            : Icons.trending_down_rounded,
-                        color: income > expense ? BF.green : BF.red,
-                        size: 18,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          income > expense
-                              ? "You're saving ${((income - expense) / income * 100).toStringAsFixed(1)}% of your income!"
-                              : expense > 0
-                              ? "Your expenses are ${((expense - income) / expense * 100).toStringAsFixed(1)}% above income"
-                              : 'Add transactions to see insights',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontFamily: 'Poppins',
-                            fontWeight: FontWeight.w600,
-                            color: income > expense ? BF.green : BF.red,
-                          ),
-                        ),
-                      ),
-                    ],
+                  child: Icon(
+                    isDark ? Icons.wb_sunny_rounded : Icons.nightlight_round,
+                    color: isDark ? Colors.amber : BF.accent,
+                    size: 17,
                   ),
                 ),
+              ),
+              const SizedBox(width: 10),
+              GestureDetector(
+                onTap: () => setState(() => _tab = 2),
+                child: _avatarWidget(widget.username, size: 38),
+              ),
             ],
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 
-  Widget _legendItem({
-    required Color color,
-    required String label,
-    required double value,
-    required double percent,
-    required bool isDark,
-  }) {
-    return Column(
-      children: [
-        Row(
-          children: [
-            Container(
-              width: 12,
-              height: 12,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: color,
-                boxShadow: [
-                  BoxShadow(color: color.withOpacity(0.5), blurRadius: 6),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 13,
-                fontFamily: 'Poppins',
-                fontWeight: FontWeight.w600,
-                color: isDark ? Colors.white70 : Colors.black54,
-              ),
-            ),
-          ],
+  // ── Balance hero card ─────────────────────────────────────────────────────
+  Widget _balanceCard(bool isDark, Map<String, double> monthStats) {
+    final net = monthStats['income']! - monthStats['expense']!;
+    final isPositive = net >= 0;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF0D1442), Color(0xFF0A1870), Color(0xFF0E2060)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
-        const SizedBox(height: 6),
-        Text(
-          currency.format(value),
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w800,
-            fontFamily: 'Poppins',
-            color: color,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF0D1442).withOpacity(0.35),
+            blurRadius: 28,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'TOTAL BALANCE',
+                style: TextStyle(
+                  fontFamily: 'Poppins',
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white.withOpacity(0.45),
+                  letterSpacing: 1.5,
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: BF.green.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: BF.green.withOpacity(0.25),
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 5,
+                      height: 5,
+                      decoration: const BoxDecoration(
+                        color: BF.green,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      'Live',
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white.withOpacity(0.8),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            currency.format(_balance),
+            style: const TextStyle(
+              fontFamily: 'Poppins',
+              fontSize: 36,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+              letterSpacing: -1.0,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: (isPositive ? BF.green : BF.red).withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: (isPositive ? BF.green : BF.red).withOpacity(0.2),
+                width: 1,
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  isPositive
+                      ? Icons.trending_up_rounded
+                      : Icons.trending_down_rounded,
+                  color: isPositive ? BF.green : BF.red,
+                  size: 15,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    isPositive
+                        ? 'Saving ${currency.format(net)} this ${DateFormat('MMMM').format(DateTime.now())}'
+                        : 'Over budget by ${currency.format(net.abs())} this ${DateFormat('MMMM').format(DateTime.now())}',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: isPositive ? BF.green : BF.red,
+                    ),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () => _showTxSheet(context),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      gradient: BF.tealGradient,
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: const Text(
+                      '+ Add',
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 11,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Monthly income / expense row ──────────────────────────────────────────
+  Widget _monthFlowRow(bool isDark, Map<String, double> monthStats) {
+    final month = DateFormat('MMM').format(DateTime.now());
+    return Row(
+      children: [
+        Expanded(
+          child: _flowPill(
+            label: '$month Income',
+            value: monthStats['income']!,
+            color: BF.green,
+            icon: Icons.arrow_downward_rounded,
+            isDark: isDark,
           ),
         ),
-        Text(
-          '${percent.toStringAsFixed(1)}%',
-          style: TextStyle(
-            fontSize: 11,
-            fontFamily: 'Poppins',
-            fontWeight: FontWeight.w600,
-            color: isDark ? Colors.white38 : Colors.black38,
+        const SizedBox(width: 12),
+        Expanded(
+          child: _flowPill(
+            label: '$month Expenses',
+            value: monthStats['expense']!,
+            color: BF.red,
+            icon: Icons.arrow_upward_rounded,
+            isDark: isDark,
           ),
         ),
       ],
     );
   }
 
-  Widget _walletCard(Map<String, dynamic> acc, bool isDark) {
+  Widget _flowPill({
+    required String label,
+    required double value,
+    required Color color,
+    required IconData icon,
+    required bool isDark,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: _card(isDark, accent: color),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: color, size: 16),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 9,
+                    color: _secondaryText(isDark),
+                    letterSpacing: 0.2,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  currency.format(value),
+                  style: TextStyle(
+                    fontFamily: 'Poppins',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                    color: color,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Account pill ──────────────────────────────────────────────────────────
+  Widget _accountPill(Map<String, dynamic> acc, bool isDark) {
     final Color baseColor = _parseColor(acc['color'], BF.accent);
     final balance = acc['balance'] as double;
-    final isNegative = balance < 0;
-
     return GestureDetector(
       onTap: () => _pushAndReload(const AccountsPage()),
       child: Container(
@@ -1621,16 +1916,33 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         margin: const EdgeInsets.only(right: 12),
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              baseColor.withOpacity(isDark ? 0.25 : 0.15),
-              baseColor.withOpacity(isDark ? 0.10 : 0.06),
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
+          color: isDark ? BF.darkCard : Colors.white,
+          gradient: isDark
+              ? LinearGradient(
+                  colors: [
+                    baseColor.withOpacity(0.18),
+                    baseColor.withOpacity(0.06),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                )
+              : null,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: baseColor.withOpacity(0.3), width: 1.2),
+          border: Border.all(
+            color: isDark
+                ? baseColor.withOpacity(0.25)
+                : baseColor.withOpacity(0.18),
+            width: 1,
+          ),
+          boxShadow: isDark
+              ? []
+              : [
+                  BoxShadow(
+                    color: baseColor.withOpacity(0.1),
+                    blurRadius: 14,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1639,58 +1951,60 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             Row(
               children: [
                 Container(
-                  width: 34,
-                  height: 34,
+                  width: 30,
+                  height: 30,
                   decoration: BoxDecoration(
-                    color: baseColor.withOpacity(0.18),
-                    borderRadius: BorderRadius.circular(10),
+                    color: baseColor.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                   alignment: Alignment.center,
                   child: Text(
                     acc['emoji'] as String? ?? '💰',
-                    style: const TextStyle(fontSize: 16),
+                    style: const TextStyle(fontSize: 15),
                   ),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
-                    acc['name'] as String,
-                    style: TextStyle(
-                      fontFamily: 'Poppins',
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white70 : Colors.black54,
-                    ),
-                    overflow: TextOverflow.ellipsis,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        acc['name'] as String,
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: isDark
+                              ? Colors.white70
+                              : const Color(0xFF374151),
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      Text(
+                        acc['type'] as String? ?? 'Wallet',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 9,
+                          color: baseColor,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
             ),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  currency.format(balance),
-                  style: TextStyle(
-                    fontFamily: 'Poppins',
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14,
-                    color: isNegative
-                        ? BF.red
-                        : (isDark ? Colors.white : Colors.black87),
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  acc['type'] as String? ?? 'Wallet',
-                  style: TextStyle(
-                    fontFamily: 'Poppins',
-                    fontSize: 10,
-                    color: baseColor.withOpacity(0.8),
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
+            Text(
+              currency.format(balance),
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontWeight: FontWeight.w800,
+                fontSize: 14,
+                color: balance < 0
+                    ? BF.red
+                    : (isDark ? Colors.white : const Color(0xFF0F172A)),
+              ),
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
@@ -1698,92 +2012,286 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _thisMonthCard(Map<String, double> stats, bool isDark) {
-    final monthName = DateFormat('MMMM').format(DateTime.now());
-    final net = stats['income']! - stats['expense']!;
-    final isPositive = net >= 0;
+  // ── Budget progress list ──────────────────────────────────────────────────
+  Widget _budgetProgressList(bool isDark) {
+    final now = DateTime.now();
+    final budgets = _s.budgets.take(3).toList();
     return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: isDark
-            ? Colors.white.withOpacity(0.04)
-            : Colors.black.withOpacity(0.02),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: isDark ? BF.darkBorder : BF.lightBorder),
+      padding: const EdgeInsets.all(4),
+      decoration: _card(isDark),
+      child: Column(
+        children: budgets.asMap().entries.map((entry) {
+          final i = entry.key;
+          final b = entry.value;
+          final category = b['category'] as String;
+          final limit = b['limit'] as double;
+          final createdAt = b['createdAt'] as DateTime? ?? DateTime(2000);
+          final spent = _s.transactions
+              .where(
+                (tx) =>
+                    tx['category'] == category &&
+                    !(tx['isIncome'] as bool) &&
+                    (tx['date'] as DateTime).isAfter(createdAt) &&
+                    (tx['date'] as DateTime).month == now.month &&
+                    (tx['date'] as DateTime).year == now.year,
+              )
+              .fold(0.0, (s, tx) => s + (tx['amount'] as double));
+          final progress = limit > 0 ? (spent / limit).clamp(0.0, 1.0) : 0.0;
+          final isOver = spent > limit;
+          final isNear = progress >= 0.8 && !isOver;
+          final barColor = isOver
+              ? BF.red
+              : isNear
+              ? BF.amber
+              : BF.green;
+
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          TxCategories.emojiFor(category),
+                          style: const TextStyle(fontSize: 16),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                category,
+                                style: TextStyle(
+                                  fontFamily: 'Poppins',
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: _primaryText(isDark),
+                                ),
+                              ),
+                              Text(
+                                '${currency.format(spent)} of ${currency.format(limit)}',
+                                style: TextStyle(
+                                  fontFamily: 'Poppins',
+                                  fontSize: 11,
+                                  color: _secondaryText(isDark),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Text(
+                          '${(progress * 100).toStringAsFixed(0)}%',
+                          style: TextStyle(
+                            fontFamily: 'Poppins',
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: barColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: LinearProgressIndicator(
+                        value: progress,
+                        backgroundColor: barColor.withOpacity(0.1),
+                        valueColor: AlwaysStoppedAnimation<Color>(barColor),
+                        minHeight: 5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (i < budgets.length - 1)
+                Divider(
+                  height: 1,
+                  color: _border(isDark),
+                  indent: 16,
+                  endIndent: 16,
+                ),
+            ],
+          );
+        }).toList(),
       ),
+    );
+  }
+
+  // ── Savings goal row ──────────────────────────────────────────────────────
+  Widget _savingsGoalRow(Map<String, dynamic> g, bool isDark) {
+    final saved = g['saved'] as double;
+    final target = g['target'] as double;
+    final pct = target > 0 ? (saved / target).clamp(0.0, 1.0) : 0.0;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(16),
+      decoration: _card(isDark),
       child: Row(
         children: [
           Container(
             width: 42,
             height: 42,
             decoration: BoxDecoration(
-              color: BF.accent.withOpacity(0.12),
+              color: BF.accent.withOpacity(0.1),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: const Icon(
-              Icons.calendar_month_rounded,
-              color: BF.accent,
-              size: 20,
+            alignment: Alignment.center,
+            child: Text(
+              g['emoji'] as String? ?? '🎯',
+              style: const TextStyle(fontSize: 20),
             ),
           ),
-          const SizedBox(width: 14),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '$monthName Summary',
+                  g['title'] as String,
                   style: TextStyle(
                     fontFamily: 'Poppins',
-                    fontSize: 12,
-                    color: isDark ? Colors.white54 : Colors.black45,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                    color: _primaryText(isDark),
                   ),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  '${isPositive ? '+' : ''}${currency.format(net)}',
-                  style: TextStyle(
-                    fontFamily: 'Poppins',
-                    fontWeight: FontWeight.w700,
-                    fontSize: 16,
-                    color: isPositive ? BF.green : BF.red,
+                const SizedBox(height: 6),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    value: pct,
+                    backgroundColor: BF.accent.withOpacity(0.1),
+                    valueColor: const AlwaysStoppedAnimation<Color>(BF.accent),
+                    minHeight: 5,
                   ),
+                ),
+                const SizedBox(height: 5),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      currency.format(saved),
+                      style: const TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: BF.accent,
+                      ),
+                    ),
+                    Text(
+                      currency.format(target),
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 11,
+                        color: _tertiaryText(isDark),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
           ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              _miniStat('In', stats['income']!, BF.green, isDark),
-              const SizedBox(height: 4),
-              _miniStat('Out', stats['expense']!, BF.red, isDark),
-            ],
+          const SizedBox(width: 12),
+          Text(
+            '${(pct * 100).toStringAsFixed(0)}%',
+            style: const TextStyle(
+              fontFamily: 'Poppins',
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: BF.accent,
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _miniStat(String label, double val, Color color, bool isDark) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
+  // ── Feature row (compact nav links) ───────────────────────────────────────
+  Widget _featureRow(bool isDark) {
+    final features = [
+      {
+        'label': 'Budget',
+        'icon': Icons.wallet_rounded,
+        'color': const Color(0xFF3B82F6),
+        'page': const BudgetPage(),
+      },
+      {
+        'label': 'Reports',
+        'icon': Icons.bar_chart_rounded,
+        'color': BF.green,
+        'page': const ReportsPage(),
+      },
+      {
+        'label': 'Recurring',
+        'icon': Icons.repeat_rounded,
+        'color': BF.amber,
+        'page': const RecurringPage(),
+      },
+      {
+        'label': 'Accounts',
+        'icon': Icons.account_balance_rounded,
+        'color': const Color(0xFFEC4899),
+        'page': const AccountsPage(),
+      },
+      {
+        'label': 'Savings',
+        'icon': Icons.savings_rounded,
+        'color': const Color(0xFF8B5CF6),
+        'page': const SavingsPage(),
+      },
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          '$label: ',
-          style: TextStyle(
-            fontFamily: 'Poppins',
-            fontSize: 10,
-            color: isDark ? Colors.white38 : Colors.black38,
-          ),
-        ),
-        Text(
-          currency.format(val),
-          style: TextStyle(
-            fontFamily: 'Poppins',
-            fontSize: 10,
-            fontWeight: FontWeight.w600,
-            color: color,
+        _sectionHeader('Quick Access', isDark),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: _card(isDark),
+          child: Row(
+            children: features.asMap().entries.map((entry) {
+              final i = entry.key;
+              final f = entry.value;
+              final color = f['color'] as Color;
+              return Expanded(
+                child: GestureDetector(
+                  onTap: () => _pushAndReload(f['page'] as Widget),
+                  child: Column(
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: color.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(
+                          f['icon'] as IconData,
+                          color: color,
+                          size: 18,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        f['label'] as String,
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w600,
+                          color: _secondaryText(isDark),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }).toList(),
           ),
         ),
       ],
@@ -1796,11 +2304,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   Widget _activityPage() {
     final isDark = _isDarkMode;
     final txs = _filteredTxs;
-
     final sortedTxs = List<Map<String, dynamic>>.from(
       txs,
     )..sort((a, b) => (a['date'] as DateTime).compareTo(b['date'] as DateTime));
-
     double runningBalance = 0;
     final List<Map<String, dynamic>> withBalance = [];
     for (final tx in sortedTxs) {
@@ -1813,21 +2319,78 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+        Container(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+          decoration: BoxDecoration(
+            color: isDark ? BF.darkBg : Colors.white,
+            border: Border(
+              bottom: BorderSide(color: _border(isDark), width: 1),
+            ),
+          ),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Transactions',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontWeight: FontWeight.w800,
+                      fontSize: 22,
+                      color: _primaryText(isDark),
+                    ),
+                  ),
+                  if (_s.transactions.isNotEmpty)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: BF.accent.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: BF.accent.withOpacity(0.2),
+                          width: 1,
+                        ),
+                      ),
+                      child: Text(
+                        '${_s.transactions.length} total',
+                        style: const TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: BF.accent,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 14),
               Container(
                 height: 48,
-                decoration: BF
-                    .card(isDark)
-                    .copyWith(borderRadius: BorderRadius.circular(14)),
+                decoration: BoxDecoration(
+                  color: isDark ? BF.darkCard : Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: _border(isDark), width: 1),
+                  boxShadow: isDark
+                      ? []
+                      : [
+                          BoxShadow(
+                            color: const Color(0xFF0F172A).withOpacity(0.04),
+                            blurRadius: 10,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                ),
                 child: Row(
                   children: [
                     const SizedBox(width: 14),
                     Icon(
                       Icons.search_rounded,
-                      color: isDark ? Colors.white38 : Colors.black38,
+                      color: _secondaryText(isDark),
                       size: 20,
                     ),
                     const SizedBox(width: 10),
@@ -1837,14 +2400,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         style: TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 14,
-                          color: isDark ? Colors.white : Colors.black87,
+                          color: _primaryText(isDark),
                         ),
                         decoration: InputDecoration(
                           hintText: 'Search transactions…',
                           hintStyle: TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: 14,
-                            color: isDark ? Colors.white38 : Colors.black38,
+                            color: _secondaryText(isDark),
                           ),
                           border: InputBorder.none,
                           isDense: true,
@@ -1856,24 +2419,35 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         onTap: () => setState(() => _searchQuery = ''),
                         child: Padding(
                           padding: const EdgeInsets.only(right: 12),
-                          child: Icon(
-                            Icons.close_rounded,
-                            color: isDark ? Colors.white38 : Colors.black38,
-                            size: 18,
+                          child: Container(
+                            width: 20,
+                            height: 20,
+                            decoration: BoxDecoration(
+                              color: isDark
+                                  ? Colors.white.withOpacity(0.1)
+                                  : const Color(0xFFE2E8F0),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              Icons.close_rounded,
+                              color: _secondaryText(isDark),
+                              size: 12,
+                            ),
                           ),
                         ),
-                      ),
-                    if (_searchQuery.isEmpty) const SizedBox(width: 12),
+                      )
+                    else
+                      const SizedBox(width: 12),
                   ],
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
               SizedBox(
                 height: 34,
                 child: ListView(
                   scrollDirection: Axis.horizontal,
                   children: [
-                    _chip(
+                    _filterChip(
                       'All',
                       _filterType == 'All' && _filterCategory == 'All',
                       isDark,
@@ -1883,41 +2457,41 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         _filterDateRange = null;
                       }),
                     ),
-                    _chip(
+                    _filterChip(
                       'Income',
                       _filterType == 'Income',
                       isDark,
-                      () => setState(
-                        () => _filterType = _filterType == 'Income'
+                      () => setState(() {
+                        _filterType = _filterType == 'Income'
                             ? 'All'
-                            : 'Income',
-                      ),
+                            : 'Income';
+                      }),
                     ),
-                    _chip(
+                    _filterChip(
                       'Expense',
                       _filterType == 'Expense',
                       isDark,
-                      () => setState(
-                        () => _filterType = _filterType == 'Expense'
+                      () => setState(() {
+                        _filterType = _filterType == 'Expense'
                             ? 'All'
-                            : 'Expense',
-                      ),
+                            : 'Expense';
+                      }),
                     ),
                     ..._categories
                         .where((c) => c != 'All')
                         .map(
-                          (c) => _chip(
+                          (c) => _filterChip(
                             c,
                             _filterCategory == c,
                             isDark,
-                            () => setState(
-                              () => _filterCategory = _filterCategory == c
+                            () => setState(() {
+                              _filterCategory = _filterCategory == c
                                   ? 'All'
-                                  : c,
-                            ),
+                                  : c;
+                            }),
                           ),
                         ),
-                    _chip(
+                    _filterChip(
                       _filterDateRange != null ? '📅 Date ✓' : '📅 Date',
                       _filterDateRange != null,
                       isDark,
@@ -1927,10 +2501,19 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           firstDate: DateTime(2020),
                           lastDate: DateTime.now(),
                           initialDateRange: _filterDateRange,
+                          builder: (context, child) => Theme(
+                            data: Theme.of(context).copyWith(
+                              colorScheme: ColorScheme.fromSeed(
+                                seedColor: BF.accent,
+                                brightness: isDark
+                                    ? Brightness.dark
+                                    : Brightness.light,
+                              ),
+                            ),
+                            child: child!,
+                          ),
                         );
-                        if (mounted) {
-                          setState(() => _filterDateRange = r);
-                        }
+                        if (mounted) setState(() => _filterDateRange = r);
                       },
                     ),
                   ],
@@ -1941,7 +2524,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         ),
         if (_s.transactions.isNotEmpty)
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
             child: _activitySummaryBar(txs, isDark),
           ),
         Expanded(
@@ -1952,7 +2535,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   Icons.search_off_rounded,
                 )
               : ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 100),
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 100),
                   itemCount: displayTransactions.length,
                   itemBuilder: (_, i) =>
                       _txTileWithBalance(displayTransactions[i], isDark),
@@ -1989,14 +2572,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   style: TextStyle(
                     fontFamily: 'Poppins',
                     fontWeight: FontWeight.w700,
-                    color: isDark ? Colors.white : Colors.black87,
+                    fontSize: 16,
+                    color: _primaryText(isDark),
                   ),
                 ),
                 content: Text(
                   'This action cannot be undone.',
                   style: TextStyle(
                     fontFamily: 'Poppins',
-                    color: isDark ? Colors.white54 : Colors.black54,
+                    fontSize: 13,
+                    color: _secondaryText(isDark),
                   ),
                 ),
                 actions: [
@@ -2004,14 +2589,22 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     onPressed: () => Navigator.pop(ctx, false),
                     child: const Text(
                       'Cancel',
-                      style: TextStyle(fontFamily: 'Poppins', color: BF.accent),
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontWeight: FontWeight.w600,
+                        color: BF.accent,
+                      ),
                     ),
                   ),
                   TextButton(
                     onPressed: () => Navigator.pop(ctx, true),
                     child: const Text(
                       'Delete',
-                      style: TextStyle(fontFamily: 'Poppins', color: BF.red),
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontWeight: FontWeight.w600,
+                        color: BF.red,
+                      ),
                     ),
                   ),
                 ],
@@ -2024,9 +2617,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           final amount = tx['amount'] as double;
           final accountIdInt = int.tryParse(tx['accountId'].toString());
           if (accountIdInt == null) return;
-
           await supabase.from('transactions').delete().eq('id', int.parse(id));
-
           final account = _s.accounts.firstWhere(
             (a) => a['id'].toString() == tx['accountId'].toString(),
             orElse: () => {},
@@ -2041,14 +2632,24 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 .update({'balance': newBalance})
                 .eq('id', accountIdInt);
           }
-
           await _loadData();
           if (mounted) setState(() {});
         } catch (e) {
           if (mounted) {
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Delete failed: $e',
+                  style: const TextStyle(fontFamily: 'Poppins', fontSize: 13),
+                ),
+                backgroundColor: BF.red,
+                behavior: SnackBarBehavior.floating,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                margin: const EdgeInsets.all(16),
+              ),
+            );
             setState(() {});
           }
         }
@@ -2061,35 +2662,50 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         ),
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.only(right: 20),
-        child: const Icon(Icons.delete_rounded, color: Colors.white),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.delete_rounded, color: Colors.white, size: 20),
+            const SizedBox(height: 4),
+            Text(
+              'Delete',
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: Colors.white.withOpacity(0.8),
+              ),
+            ),
+          ],
+        ),
       ),
       child: GestureDetector(
         onTap: () => _showTxSheet(context, existing: tx),
         child: Container(
           margin: const EdgeInsets.only(bottom: 10),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          decoration: BF.card(isDark),
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+          decoration: _card(isDark),
           child: Column(
             children: [
               Row(
                 children: [
                   Container(
-                    width: 46,
-                    height: 46,
+                    width: 44,
+                    height: 44,
                     decoration: BoxDecoration(
                       color: isIncome
-                          ? BF.green.withOpacity(0.12)
-                          : catColor.withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(13),
+                          ? BF.green.withOpacity(0.1)
+                          : catColor.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
                     ),
                     alignment: Alignment.center,
                     child: isIncome
                         ? const Icon(
                             Icons.arrow_downward_rounded,
                             color: BF.green,
-                            size: 20,
+                            size: 18,
                           )
-                        : Text(catEmoji, style: const TextStyle(fontSize: 20)),
+                        : Text(catEmoji, style: const TextStyle(fontSize: 18)),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -2102,10 +2718,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                             fontWeight: FontWeight.w600,
                             fontFamily: 'Poppins',
                             fontSize: 14,
-                            color: isDark ? Colors.white : Colors.black87,
+                            color: _primaryText(isDark),
                           ),
                         ),
-                        const SizedBox(height: 4),
+                        const SizedBox(height: 3),
                         Row(
                           children: [
                             Container(
@@ -2114,7 +2730,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                 vertical: 2,
                               ),
                               decoration: BoxDecoration(
-                                color: catColor.withOpacity(0.12),
+                                color: catColor.withOpacity(0.1),
                                 borderRadius: BorderRadius.circular(6),
                               ),
                               child: Text(
@@ -2127,19 +2743,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                 ),
                               ),
                             ),
-                            if ((acc['name'] as String? ?? '').isNotEmpty) ...[
-                              const SizedBox(width: 6),
-                              Text(
-                                '${acc['emoji'] ?? ''} ${acc['name']}',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  fontFamily: 'Poppins',
-                                  color: isDark
-                                      ? Colors.white38
-                                      : Colors.black38,
-                                ),
-                              ),
-                            ],
                           ],
                         ),
                         const SizedBox(height: 3),
@@ -2150,57 +2753,61 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           style: TextStyle(
                             fontSize: 10,
                             fontFamily: 'Poppins',
-                            color: isDark ? Colors.white30 : Colors.black26,
+                            color: _tertiaryText(isDark),
                           ),
                         ),
                       ],
                     ),
                   ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        '${isIncome ? '+' : '-'}${currency.format(tx['amount'])}',
-                        style: TextStyle(
-                          color: isIncome ? BF.green : BF.red,
-                          fontWeight: FontWeight.w700,
-                          fontFamily: 'Poppins',
-                          fontSize: 14,
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                      Icon(
-                        Icons.edit_rounded,
-                        size: 12,
-                        color: isDark ? Colors.white24 : Colors.black26,
-                      ),
-                    ],
+                  Text(
+                    '${isIncome ? '+' : '-'}${currency.format(tx['amount'])}',
+                    style: TextStyle(
+                      color: isIncome ? BF.green : BF.red,
+                      fontWeight: FontWeight.w700,
+                      fontFamily: 'Poppins',
+                      fontSize: 14,
+                    ),
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 10),
               Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 12,
-                  vertical: 6,
+                  vertical: 7,
                 ),
                 decoration: BoxDecoration(
                   color: isDark
-                      ? Colors.white.withOpacity(0.05)
-                      : Colors.black.withOpacity(0.03),
-                  borderRadius: BorderRadius.circular(8),
+                      ? Colors.white.withOpacity(0.04)
+                      : const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(9),
+                  border: Border.all(
+                    color: isDark
+                        ? Colors.white.withOpacity(0.06)
+                        : const Color(0xFFE2E8F0),
+                    width: 1,
+                  ),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      'Running Balance',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontFamily: 'Poppins',
-                        fontWeight: FontWeight.w500,
-                        color: isDark ? Colors.white38 : Colors.black38,
-                      ),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.account_balance_wallet_outlined,
+                          size: 11,
+                          color: _tertiaryText(isDark),
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          'Running Balance',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontFamily: 'Poppins',
+                            color: _secondaryText(isDark),
+                          ),
+                        ),
+                      ],
                     ),
                     Text(
                       currency.format(runningBalance),
@@ -2234,20 +2841,33 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
-        color: BF.accent.withOpacity(0.07),
+        color: BF.accent.withOpacity(isDark ? 0.06 : 0.05),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: BF.accent.withOpacity(0.15)),
+        border: Border.all(
+          color: BF.accent.withOpacity(isDark ? 0.12 : 0.15),
+          width: 1,
+        ),
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            '${txs.length} transaction${txs.length != 1 ? 's' : ''}',
-            style: TextStyle(
-              fontFamily: 'Poppins',
-              fontSize: 11,
-              color: isDark ? Colors.white54 : Colors.black45,
-            ),
+          Row(
+            children: [
+              Icon(
+                Icons.receipt_long_rounded,
+                size: 13,
+                color: _secondaryText(isDark),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '${txs.length} transaction${txs.length != 1 ? 's' : ''}',
+                style: TextStyle(
+                  fontFamily: 'Poppins',
+                  fontSize: 11,
+                  color: _secondaryText(isDark),
+                ),
+              ),
+            ],
           ),
           Row(
             children: [
@@ -2256,17 +2876,22 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 style: const TextStyle(
                   fontFamily: 'Poppins',
                   fontSize: 11,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w700,
                   color: BF.green,
                 ),
               ),
-              const SizedBox(width: 10),
+              Container(
+                width: 1,
+                height: 12,
+                margin: const EdgeInsets.symmetric(horizontal: 8),
+                color: _border(isDark),
+              ),
               Text(
                 '-${currency.format(exp)}',
                 style: const TextStyle(
                   fontFamily: 'Poppins',
                   fontSize: 11,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w700,
                   color: BF.red,
                 ),
               ),
@@ -2305,10 +2930,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             .toList();
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 100),
       child: Column(
         children: [
-          const SizedBox(height: 16),
+          // ── Profile card ────────────────────────────────────────────────
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(28),
@@ -2322,12 +2947,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
-              borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.circular(28),
               boxShadow: [
                 BoxShadow(
-                  color: BF.accent.withOpacity(0.3),
-                  blurRadius: 24,
-                  offset: const Offset(0, 8),
+                  color: BF.violet.withOpacity(isDark ? 0.3 : 0.2),
+                  blurRadius: 28,
+                  offset: const Offset(0, 10),
                 ),
               ],
             ),
@@ -2337,7 +2962,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   onTap: _pickProfileImage,
                   child: Stack(
                     children: [
-                      _avatarWidget(widget.username, size: 84),
+                      _avatarWidget(widget.username, size: 80),
                       Positioned(
                         bottom: 0,
                         right: 0,
@@ -2354,7 +2979,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           ),
                           child: const Icon(
                             Icons.camera_alt_rounded,
-                            size: 13,
+                            size: 12,
                             color: Color(0xFF3B30C4),
                           ),
                         ),
@@ -2362,7 +2987,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     ],
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 12),
                 Text(
                   widget.username,
                   style: const TextStyle(
@@ -2373,36 +2998,73 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  'BudgetFlow Member',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontFamily: 'Poppins',
-                    color: Colors.white.withOpacity(0.55),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    'BudgetFlow Member',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontFamily: 'Poppins',
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white.withOpacity(0.7),
+                    ),
                   ),
                 ),
-                const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _heroStat('$txCount', 'Transactions'),
-                    _heroDivider(),
-                    _heroStat('$goalCount', 'Goals'),
-                    _heroDivider(),
-                    _heroStat('$accCount', 'Accounts'),
-                  ],
+                const SizedBox(height: 20),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 14,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: Colors.white.withOpacity(0.1),
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _profileStat('$txCount', 'Transactions'),
+                      Container(
+                        width: 1,
+                        height: 30,
+                        color: Colors.white.withOpacity(0.15),
+                      ),
+                      _profileStat('$goalCount', 'Goals'),
+                      Container(
+                        width: 1,
+                        height: 30,
+                        color: Colors.white.withOpacity(0.15),
+                      ),
+                      _profileStat('$accCount', 'Accounts'),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 14),
                 GestureDetector(
                   onTap: () => _saveThemePref(!_isDarkMode),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
+                      horizontal: 18,
+                      vertical: 10,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.12),
+                      color: Colors.white.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: Colors.white.withOpacity(0.15),
+                        width: 1,
+                      ),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -2411,8 +3073,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           isDark
                               ? Icons.wb_sunny_rounded
                               : Icons.nightlight_round,
-                          size: 16,
-                          color: Colors.white,
+                          size: 14,
+                          color: isDark ? Colors.amber : Colors.white,
                         ),
                         const SizedBox(width: 8),
                         Text(
@@ -2433,31 +3095,46 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               ],
             ),
           ),
-          const SizedBox(height: 18),
-          _sectionHead('Financial Summary', isDark),
-          const SizedBox(height: 12),
+
+          const SizedBox(height: 16),
+
+          // ── Net worth / savings rate ──────────────────────────────────
           Container(
-            width: double.infinity,
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  BF.accent.withOpacity(0.15),
-                  BF.accentSoft.withOpacity(0.08),
-                ],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
+              color: isDark ? BF.darkCard : Colors.white,
+              gradient: isDark
+                  ? null
+                  : LinearGradient(
+                      colors: [
+                        BF.accent.withOpacity(0.05),
+                        BF.accentSoft.withOpacity(0.02),
+                      ],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: isDark ? BF.darkBorder : BF.accent.withOpacity(0.18),
+                width: 1,
               ),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: BF.accent.withOpacity(0.25)),
+              boxShadow: isDark
+                  ? []
+                  : [
+                      BoxShadow(
+                        color: BF.accent.withOpacity(0.07),
+                        blurRadius: 18,
+                        offset: const Offset(0, 5),
+                      ),
+                    ],
             ),
             child: Row(
               children: [
                 Container(
-                  width: 48,
-                  height: 48,
+                  width: 50,
+                  height: 50,
                   decoration: BoxDecoration(
-                    color: BF.accent.withOpacity(0.15),
+                    color: BF.accent.withOpacity(0.12),
                     borderRadius: BorderRadius.circular(14),
                   ),
                   child: const Icon(
@@ -2476,7 +3153,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         style: TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 12,
-                          color: isDark ? Colors.white54 : Colors.black45,
+                          color: _secondaryText(isDark),
                         ),
                       ),
                       const SizedBox(height: 2),
@@ -2485,7 +3162,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         style: TextStyle(
                           fontFamily: 'Poppins',
                           fontWeight: FontWeight.w800,
-                          fontSize: 22,
+                          fontSize: 20,
                           color: netWorth >= 0 ? BF.green : BF.red,
                         ),
                       ),
@@ -2499,7 +3176,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       '${savingsRate.toStringAsFixed(1)}%',
                       style: const TextStyle(
                         fontFamily: 'Poppins',
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w800,
                         fontSize: 18,
                         color: BF.accent,
                       ),
@@ -2509,7 +3186,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       style: TextStyle(
                         fontFamily: 'Poppins',
                         fontSize: 10,
-                        color: isDark ? Colors.white38 : Colors.black38,
+                        color: _tertiaryText(isDark),
                       ),
                     ),
                   ],
@@ -2517,7 +3194,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               ],
             ),
           ),
-          const SizedBox(height: 10),
+
+          const SizedBox(height: 12),
+
           Row(
             children: [
               Expanded(
@@ -2529,7 +3208,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   isDark,
                 ),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 12),
               Expanded(
                 child: _profileFinCard(
                   'Total Spent',
@@ -2565,26 +3244,36 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               ),
             ],
           ),
+
           if (topCats.isNotEmpty) ...[
-            const SizedBox(height: 18),
-            _sectionHead('Top Spending', isDark),
+            const SizedBox(height: 24),
+            _sectionHeader('Top Spending', isDark),
             const SizedBox(height: 12),
             ...topCats.map((e) {
               final pct = totalExpense > 0 ? e.value / totalExpense : 0.0;
               final color = TxCategories.colorFor(e.key);
               return Container(
                 margin: const EdgeInsets.only(bottom: 10),
-                padding: const EdgeInsets.all(14),
-                decoration: BF.card(isDark),
+                padding: const EdgeInsets.all(16),
+                decoration: _card(isDark),
                 child: Column(
                   children: [
                     Row(
                       children: [
-                        Text(
-                          TxCategories.emojiFor(e.key),
-                          style: const TextStyle(fontSize: 20),
+                        Container(
+                          width: 38,
+                          height: 38,
+                          decoration: BoxDecoration(
+                            color: color.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(11),
+                          ),
+                          alignment: Alignment.center,
+                          child: Text(
+                            TxCategories.emojiFor(e.key),
+                            style: const TextStyle(fontSize: 17),
+                          ),
                         ),
-                        const SizedBox(width: 10),
+                        const SizedBox(width: 12),
                         Expanded(
                           child: Text(
                             e.key,
@@ -2592,41 +3281,42 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                               fontFamily: 'Poppins',
                               fontWeight: FontWeight.w600,
                               fontSize: 13,
-                              color: isDark ? Colors.white : Colors.black87,
+                              color: _primaryText(isDark),
                             ),
                           ),
                         ),
-                        Text(
-                          currency.format(e.value),
-                          style: TextStyle(
-                            fontFamily: 'Poppins',
-                            fontWeight: FontWeight.w700,
-                            fontSize: 13,
-                            color: color,
-                          ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              currency.format(e.value),
+                              style: TextStyle(
+                                fontFamily: 'Poppins',
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13,
+                                color: color,
+                              ),
+                            ),
+                            Text(
+                              '${(pct * 100).toStringAsFixed(1)}%',
+                              style: TextStyle(
+                                fontFamily: 'Poppins',
+                                fontSize: 10,
+                                color: _tertiaryText(isDark),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 10),
                     ClipRRect(
-                      borderRadius: BorderRadius.circular(6),
+                      borderRadius: BorderRadius.circular(5),
                       child: LinearProgressIndicator(
                         value: pct.clamp(0.0, 1.0),
                         backgroundColor: color.withOpacity(0.1),
-                        valueColor: AlwaysStoppedAnimation(color),
+                        valueColor: AlwaysStoppedAnimation<Color>(color),
                         minHeight: 5,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: Text(
-                        '${(pct * 100).toStringAsFixed(1)}% of spending',
-                        style: TextStyle(
-                          fontFamily: 'Poppins',
-                          fontSize: 10,
-                          color: isDark ? Colors.white38 : Colors.black38,
-                        ),
                       ),
                     ),
                   ],
@@ -2634,8 +3324,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               );
             }),
           ],
-          const SizedBox(height: 18),
-          _sectionHead('Features', isDark),
+
+          const SizedBox(height: 24),
+          _sectionHeader('Features', isDark),
           const SizedBox(height: 12),
           _profileLink(
             isDark,
@@ -2672,36 +3363,42 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             const Color(0xFF8B5CF6),
             () => _pushAndReload(const SavingsPage()),
           ),
-          const SizedBox(height: 20),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: () async {
-                await _clearSessionData();
-                if (!mounted) return;
-                Navigator.pushAndRemoveUntil(
-                  context,
-                  MaterialPageRoute(builder: (_) => const AuthPage()),
-                  (route) => false,
-                );
-              },
-              icon: const Icon(Icons.logout_rounded, size: 18),
-              label: const Text(
-                'Logout',
-                style: TextStyle(
-                  fontFamily: 'Poppins',
-                  fontWeight: FontWeight.w600,
-                  fontSize: 15,
-                ),
+
+          const SizedBox(height: 24),
+
+          GestureDetector(
+            onTap: () async {
+              await _clearSessionData();
+              if (!mounted) return;
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (_) => const AuthPage()),
+                (route) => false,
+              );
+            },
+            child: Container(
+              width: double.infinity,
+              height: 56,
+              decoration: BoxDecoration(
+                color: BF.red.withOpacity(0.07),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: BF.red.withOpacity(0.22), width: 1),
               ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: BF.red,
-                foregroundColor: Colors.white,
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.logout_rounded, color: BF.red, size: 18),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'Sign Out',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontWeight: FontWeight.w700,
+                      fontSize: 15,
+                      color: BF.red,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -2710,7 +3407,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _heroStat(String value, String label) => Column(
+  // ── Shared small widgets ──────────────────────────────────────────────────
+  Widget _profileStat(String value, String label) => Column(
     children: [
       Text(
         value,
@@ -2725,15 +3423,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         label,
         style: TextStyle(
           fontFamily: 'Poppins',
-          fontSize: 11,
-          color: Colors.white.withOpacity(0.55),
+          fontSize: 10,
+          color: Colors.white.withOpacity(0.5),
         ),
       ),
     ],
   );
-
-  Widget _heroDivider() =>
-      Container(width: 1, height: 32, color: Colors.white.withOpacity(0.2));
 
   Widget _profileFinCard(
     String label,
@@ -2743,22 +3438,34 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     bool isDark,
   ) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.07),
+        color: isDark ? BF.darkCard : color.withOpacity(0.05),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withOpacity(0.2)),
+        border: Border.all(
+          color: isDark ? BF.darkBorder : color.withOpacity(0.15),
+          width: 1,
+        ),
+        boxShadow: isDark
+            ? []
+            : [
+                BoxShadow(
+                  color: color.withOpacity(0.07),
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                ),
+              ],
       ),
       child: Row(
         children: [
           Container(
-            width: 36,
-            height: 36,
+            width: 34,
+            height: 34,
             decoration: BoxDecoration(
               color: color.withOpacity(0.12),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Icon(icon, color: color, size: 16),
+            child: Icon(icon, color: color, size: 15),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -2770,7 +3477,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   style: TextStyle(
                     fontFamily: 'Poppins',
                     fontSize: 10,
-                    color: isDark ? Colors.white38 : Colors.black38,
+                    color: _secondaryText(isDark),
                   ),
                 ),
                 const SizedBox(height: 2),
@@ -2779,7 +3486,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   style: TextStyle(
                     fontFamily: 'Poppins',
                     fontWeight: FontWeight.w700,
-                    fontSize: 13,
+                    fontSize: 12,
                     color: color,
                   ),
                   overflow: TextOverflow.ellipsis,
@@ -2792,11 +3499,70 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
+  Widget _profileLink(
+    bool isDark,
+    IconData icon,
+    String label,
+    Color color,
+    VoidCallback onTap,
+  ) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: _card(isDark),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icon, color: color, size: 18),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontFamily: 'Poppins',
+                  fontWeight: FontWeight.w600,
+                  fontSize: 14,
+                  color: _primaryText(isDark),
+                ),
+              ),
+            ),
+            Container(
+              width: 26,
+              height: 26,
+              decoration: BoxDecoration(
+                color: isDark
+                    ? Colors.white.withOpacity(0.05)
+                    : const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                Icons.chevron_right_rounded,
+                color: _tertiaryText(isDark),
+                size: 15,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _sheetHandle() => Container(
-    width: 40,
+    width: 38,
     height: 4,
     decoration: BoxDecoration(
-      color: _isDarkMode ? Colors.white24 : Colors.black12,
+      color: _isDarkMode
+          ? Colors.white.withOpacity(0.15)
+          : const Color(0xFFCBD5E1),
       borderRadius: BorderRadius.circular(10),
     ),
   );
@@ -2817,341 +3583,30 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return _avatar(name, size: size);
   }
 
-  Widget _balanceCard(bool isDark) {
+  Widget _avatar(String name, {double size = 44}) {
+    final initials = name.trim().isNotEmpty
+        ? name.trim().split(' ').map((e) => e[0]).take(2).join().toUpperCase()
+        : 'U';
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF1A2F6E), Color(0xFF3B30C4), Color(0xFF6C63FF)],
+      width: size,
+      height: size,
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          colors: [BF.accent, BF.accentSoft],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [
-          BoxShadow(
-            color: BF.accent.withOpacity(0.3),
-            blurRadius: 28,
-            offset: const Offset(0, 10),
-          ),
-        ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Total Balance',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.6),
-                  fontFamily: 'Poppins',
-                  fontSize: 13,
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 5,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 7,
-                      height: 7,
-                      decoration: const BoxDecoration(
-                        color: BF.green,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 5),
-                    Text(
-                      'Live',
-                      style: TextStyle(
-                        color: Colors.white.withOpacity(0.8),
-                        fontSize: 11,
-                        fontFamily: 'Poppins',
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            currency.format(_balance),
-            style: const TextStyle(
-              fontSize: 36,
-              color: Colors.white,
-              fontWeight: FontWeight.w700,
-              fontFamily: 'Poppins',
-              letterSpacing: -1.0,
-            ),
-          ),
-          const SizedBox(height: 20),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: () => _showTxSheet(context),
-              icon: const Icon(Icons.add_rounded, size: 18),
-              label: const Text(
-                'Add Transaction',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  fontFamily: 'Poppins',
-                ),
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: BF.primary,
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(vertical: 13),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _featureGrid(bool isDark) {
-    final features = [
-      {
-        'label': 'Budget',
-        'icon': Icons.wallet_rounded,
-        'color': const Color(0xFF3B82F6),
-        'page': const BudgetPage(),
-      },
-      {
-        'label': 'Reports',
-        'icon': Icons.bar_chart_rounded,
-        'color': BF.green,
-        'page': const ReportsPage(),
-      },
-      {
-        'label': 'Recurring',
-        'icon': Icons.repeat_rounded,
-        'color': BF.amber,
-        'page': const RecurringPage(),
-      },
-      {
-        'label': 'Accounts',
-        'icon': Icons.account_balance_rounded,
-        'color': const Color(0xFFEC4899),
-        'page': const AccountsPage(),
-      },
-      {
-        'label': 'Savings',
-        'icon': Icons.savings_rounded,
-        'color': const Color(0xFF8B5CF6),
-        'page': const SavingsPage(),
-      },
-    ];
-    return Row(
-      children: features.asMap().entries.map((entry) {
-        final i = entry.key;
-        final f = entry.value;
-        final color = f['color'] as Color;
-        return Expanded(
-          child: GestureDetector(
-            onTap: () => _pushAndReload(f['page'] as Widget),
-            child: Container(
-              margin: EdgeInsets.only(right: i < features.length - 1 ? 8 : 0),
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              decoration: BF.card(isDark),
-              child: Column(
-                children: [
-                  Container(
-                    width: 38,
-                    height: 38,
-                    decoration: BoxDecoration(
-                      color: color.withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(11),
-                    ),
-                    child: Icon(f['icon'] as IconData, color: color, size: 19),
-                  ),
-                  const SizedBox(height: 7),
-                  Text(
-                    f['label'] as String,
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontFamily: 'Poppins',
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white60 : Colors.black54,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      }).toList(),
-    );
-  }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // BUDGET ALERTS — only counts spending STRICTLY AFTER budget was created
-  // ══════════════════════════════════════════════════════════════════════════
-  Widget _budgetAlerts(bool isDark) {
-    final now = DateTime.now();
-
-    // Local helper that mirrors BudgetPage._getSpentForCategory exactly,
-    // but without a date-range filter (dashboard always shows current month).
-    double spentAfterCreation(String category, DateTime createdAt) {
-      return _s.transactions
-          .where(
-            (tx) =>
-                tx['category'] == category &&
-                !(tx['isIncome'] as bool) &&
-                // Only transactions STRICTLY AFTER budget creation
-                (tx['date'] as DateTime).isAfter(createdAt) &&
-                // Current month only
-                (tx['date'] as DateTime).month == now.month &&
-                (tx['date'] as DateTime).year == now.year,
-          )
-          .fold(0.0, (sum, tx) => sum + (tx['amount'] as double));
-    }
-
-    final alerts = _s.budgets.where((b) {
-      final createdAt = b['createdAt'] as DateTime? ?? DateTime(2000);
-      final spent = spentAfterCreation(b['category'] as String, createdAt);
-      final limit = b['limit'] as double;
-      return limit > 0 && (spent / limit) >= 0.8;
-    }).toList();
-
-    if (alerts.isEmpty) return const SizedBox.shrink();
-
-    return Column(
-      children: [
-        ...alerts.take(2).map((b) {
-          final createdAt = b['createdAt'] as DateTime? ?? DateTime(2000);
-          final spent = spentAfterCreation(b['category'] as String, createdAt);
-          final limit = b['limit'] as double;
-          final isOver = spent > limit;
-          final c = isOver ? BF.red : BF.amber;
-          return Container(
-            margin: const EdgeInsets.only(bottom: 10),
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: c.withOpacity(0.07),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: c.withOpacity(0.25)),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  isOver
-                      ? Icons.warning_rounded
-                      : Icons.notifications_active_rounded,
-                  color: c,
-                  size: 18,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    isOver
-                        ? "${b['category']} over budget by ${currency.format(spent - limit)}"
-                        : "${b['category']} at ${((spent / limit) * 100).toStringAsFixed(0)}% of budget",
-                    style: TextStyle(
-                      fontFamily: 'Poppins',
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: c,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          );
-        }),
-        const SizedBox(height: 4),
-      ],
-    );
-  }
-
-  Widget _goalMini(Map<String, dynamic> g, bool isDark) {
-    final saved = g['saved'] as double;
-    final target = g['target'] as double;
-    final pct = target > 0 ? (saved / target).clamp(0.0, 1.0) : 0.0;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(16),
-      decoration: BF.card(isDark),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Text(
-                g['emoji'] as String? ?? '🎯',
-                style: const TextStyle(fontSize: 20),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  g['title'] as String,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontFamily: 'Poppins',
-                    fontSize: 14,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                ),
-              ),
-              Text(
-                '${(pct * 100).toStringAsFixed(0)}%',
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontFamily: 'Poppins',
-                  fontSize: 13,
-                  color: BF.accent,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: LinearProgressIndicator(
-              value: pct,
-              backgroundColor: BF.accent.withOpacity(0.1),
-              valueColor: const AlwaysStoppedAnimation(BF.accent),
-              minHeight: 6,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                currency.format(saved),
-                style: TextStyle(
-                  fontSize: 11,
-                  fontFamily: 'Poppins',
-                  color: isDark ? Colors.white38 : Colors.black38,
-                ),
-              ),
-              Text(
-                currency.format(target),
-                style: TextStyle(
-                  fontSize: 11,
-                  fontFamily: 'Poppins',
-                  color: isDark ? Colors.white38 : Colors.black38,
-                ),
-              ),
-            ],
-          ),
-        ],
+      alignment: Alignment.center,
+      child: Text(
+        initials,
+        style: TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.w700,
+          fontFamily: 'Poppins',
+          fontSize: size * 0.32,
+        ),
       ),
     );
   }
@@ -3183,14 +3638,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   style: TextStyle(
                     fontFamily: 'Poppins',
                     fontWeight: FontWeight.w700,
-                    color: isDark ? Colors.white : Colors.black87,
+                    fontSize: 16,
+                    color: _primaryText(isDark),
                   ),
                 ),
                 content: Text(
                   'This action cannot be undone.',
                   style: TextStyle(
                     fontFamily: 'Poppins',
-                    color: isDark ? Colors.white54 : Colors.black54,
+                    fontSize: 13,
+                    color: _secondaryText(isDark),
                   ),
                 ),
                 actions: [
@@ -3198,14 +3655,22 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     onPressed: () => Navigator.pop(ctx, false),
                     child: const Text(
                       'Cancel',
-                      style: TextStyle(fontFamily: 'Poppins', color: BF.accent),
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontWeight: FontWeight.w600,
+                        color: BF.accent,
+                      ),
                     ),
                   ),
                   TextButton(
                     onPressed: () => Navigator.pop(ctx, true),
                     child: const Text(
                       'Delete',
-                      style: TextStyle(fontFamily: 'Poppins', color: BF.red),
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontWeight: FontWeight.w600,
+                        color: BF.red,
+                      ),
                     ),
                   ),
                 ],
@@ -3218,9 +3683,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           final amount = tx['amount'] as double;
           final accountIdInt = int.tryParse(tx['accountId'].toString());
           if (accountIdInt == null) return;
-
           await supabase.from('transactions').delete().eq('id', int.parse(id));
-
           final account = _s.accounts.firstWhere(
             (a) => a['id'].toString() == tx['accountId'].toString(),
             orElse: () => {},
@@ -3235,14 +3698,24 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 .update({'balance': newBalance})
                 .eq('id', accountIdInt);
           }
-
           await _loadData();
           if (mounted) setState(() {});
         } catch (e) {
           if (mounted) {
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Delete failed: $e',
+                  style: const TextStyle(fontFamily: 'Poppins', fontSize: 13),
+                ),
+                backgroundColor: BF.red,
+                behavior: SnackBarBehavior.floating,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                margin: const EdgeInsets.all(16),
+              ),
+            );
             setState(() {});
           }
         }
@@ -3255,37 +3728,52 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         ),
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.only(right: 20),
-        child: const Icon(Icons.delete_rounded, color: Colors.white),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.delete_rounded, color: Colors.white, size: 20),
+            const SizedBox(height: 4),
+            Text(
+              'Delete',
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: Colors.white.withOpacity(0.8),
+              ),
+            ),
+          ],
+        ),
       ),
       child: GestureDetector(
         onTap: () => _showTxSheet(context, existing: tx),
         child: Container(
           margin: const EdgeInsets.only(bottom: 10),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          decoration: BF.card(isDark),
+          decoration: _card(isDark),
           child: Row(
             children: [
               Container(
-                width: 46,
-                height: 46,
+                width: 44,
+                height: 44,
                 decoration: BoxDecoration(
                   color: isTransfer
-                      ? BF.accent.withOpacity(0.12)
+                      ? BF.accent.withOpacity(0.1)
                       : isIncome
-                      ? BF.green.withOpacity(0.12)
-                      : catColor.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(13),
+                      ? BF.green.withOpacity(0.1)
+                      : catColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 alignment: Alignment.center,
                 child: isTransfer
-                    ? const Text('🔄', style: TextStyle(fontSize: 20))
+                    ? const Text('🔄', style: TextStyle(fontSize: 18))
                     : isIncome
                     ? const Icon(
                         Icons.arrow_downward_rounded,
                         color: BF.green,
-                        size: 20,
+                        size: 18,
                       )
-                    : Text(catEmoji, style: const TextStyle(fontSize: 20)),
+                    : Text(catEmoji, style: const TextStyle(fontSize: 18)),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -3298,10 +3786,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         fontWeight: FontWeight.w600,
                         fontFamily: 'Poppins',
                         fontSize: 14,
-                        color: isDark ? Colors.white : Colors.black87,
+                        color: _primaryText(isDark),
                       ),
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 3),
                     Row(
                       children: [
                         Container(
@@ -3311,8 +3799,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           ),
                           decoration: BoxDecoration(
                             color: isTransfer
-                                ? BF.accent.withOpacity(0.12)
-                                : catColor.withOpacity(0.12),
+                                ? BF.accent.withOpacity(0.1)
+                                : catColor.withOpacity(0.1),
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(
@@ -3334,7 +3822,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                             style: TextStyle(
                               fontSize: 10,
                               fontFamily: 'Poppins',
-                              color: isDark ? Colors.white38 : Colors.black38,
+                              color: _tertiaryText(isDark),
                             ),
                           ),
                         ],
@@ -3348,33 +3836,22 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       style: TextStyle(
                         fontSize: 10,
                         fontFamily: 'Poppins',
-                        color: isDark ? Colors.white30 : Colors.black26,
+                        color: _tertiaryText(isDark),
                       ),
                     ),
                   ],
                 ),
               ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    '${isTransfer ? '↻' : (isIncome ? '+' : '-')}${currency.format(tx['amount'])}',
-                    style: TextStyle(
-                      color: isTransfer
-                          ? BF.accent
-                          : (isIncome ? BF.green : BF.red),
-                      fontWeight: FontWeight.w700,
-                      fontFamily: 'Poppins',
-                      fontSize: 14,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Icon(
-                    Icons.edit_rounded,
-                    size: 12,
-                    color: isDark ? Colors.white24 : Colors.black26,
-                  ),
-                ],
+              Text(
+                '${isTransfer ? '↻' : (isIncome ? '+' : '-')}${currency.format(tx['amount'])}',
+                style: TextStyle(
+                  color: isTransfer
+                      ? BF.accent
+                      : (isIncome ? BF.green : BF.red),
+                  fontWeight: FontWeight.w700,
+                  fontFamily: 'Poppins',
+                  fontSize: 14,
+                ),
               ),
             ],
           ),
@@ -3383,117 +3860,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _summaryTile(String label, double amount, bool isIncome, bool isDark) {
-    final color = isIncome ? BF.green : BF.red;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BF.card(isDark),
-      child: Row(
-        children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(11),
-            ),
-            child: Icon(
-              isIncome
-                  ? Icons.arrow_downward_rounded
-                  : Icons.arrow_upward_rounded,
-              color: color,
-              size: 18,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontFamily: 'Poppins',
-                    color: isDark ? Colors.white38 : Colors.black38,
-                  ),
-                ),
-                Text(
-                  currency.format(amount),
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    fontFamily: 'Poppins',
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _catChip(String label, String percent, bool isDark) {
-    final color = TxCategories.colorFor(label);
-    final emoji = TxCategories.emojiFor(label);
-    return Container(
-      width: 130,
-      margin: const EdgeInsets.only(right: 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BF.card(isDark),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(9),
-            ),
-            alignment: Alignment.center,
-            child: Text(emoji, style: const TextStyle(fontSize: 14)),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            label,
-            style: TextStyle(
-              fontWeight: FontWeight.w600,
-              fontFamily: 'Poppins',
-              fontSize: 12,
-              color: isDark ? Colors.white : Colors.black87,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          Text(
-            '$percent%',
-            style: TextStyle(
-              color: isDark ? Colors.white38 : Colors.black38,
-              fontSize: 11,
-              fontFamily: 'Poppins',
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _sectionHead(String title, bool isDark, {Widget? action}) {
+  Widget _sectionHeader(String title, bool isDark, {Widget? action}) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         Text(
           title,
           style: TextStyle(
-            fontSize: 17,
-            fontWeight: FontWeight.w700,
             fontFamily: 'Poppins',
-            color: isDark ? Colors.white : Colors.black87,
+            fontWeight: FontWeight.w700,
+            fontSize: 16,
+            color: _primaryText(isDark),
           ),
         ),
         if (action != null) action,
@@ -3501,17 +3878,23 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _viewAll(String label, VoidCallback onTap) {
+  Widget _seeAllBtn(String label, VoidCallback onTap) {
     return GestureDetector(
       onTap: onTap,
-      child: Text(
-        label,
-        style: const TextStyle(
-          fontFamily: 'Poppins',
-          fontSize: 13,
-          fontWeight: FontWeight.w600,
-          color: BF.accent,
-        ),
+      child: Row(
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontFamily: 'Poppins',
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: BF.accent,
+            ),
+          ),
+          const SizedBox(width: 2),
+          const Icon(Icons.chevron_right_rounded, color: BF.accent, size: 16),
+        ],
       ),
     );
   }
@@ -3520,22 +3903,22 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(vertical: 36),
-      decoration: BF.card(isDark),
+      decoration: _card(isDark),
       child: Column(
         children: [
           Container(
-            width: 60,
-            height: 60,
+            width: 56,
+            height: 56,
             decoration: BoxDecoration(
               color: isDark
-                  ? Colors.white.withOpacity(0.05)
-                  : Colors.black.withOpacity(0.04),
-              borderRadius: BorderRadius.circular(18),
+                  ? Colors.white.withOpacity(0.04)
+                  : const Color(0xFFF1F5F9),
+              borderRadius: BorderRadius.circular(16),
             ),
             child: Icon(
               icon,
-              size: 28,
-              color: isDark ? Colors.white24 : Colors.black26,
+              size: 26,
+              color: isDark ? Colors.white24 : const Color(0xFFCBD5E1),
             ),
           ),
           const SizedBox(height: 12),
@@ -3543,8 +3926,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             msg,
             style: TextStyle(
               fontFamily: 'Poppins',
-              color: isDark ? Colors.white38 : Colors.black38,
+              fontWeight: FontWeight.w500,
+              color: _secondaryText(isDark),
               fontSize: 14,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            'Tap + to get started',
+            style: TextStyle(
+              fontFamily: 'Poppins',
+              fontSize: 12,
+              color: _tertiaryText(isDark),
             ),
           ),
         ],
@@ -3552,35 +3945,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _avatar(String name, {double size = 44}) {
-    final initials = name.trim().isNotEmpty
-        ? name.trim().split(' ').map((e) => e[0]).take(2).join().toUpperCase()
-        : 'U';
-    return Container(
-      width: size,
-      height: size,
-      decoration: const BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: LinearGradient(
-          colors: [BF.accent, BF.accentSoft],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-      ),
-      alignment: Alignment.center,
-      child: Text(
-        initials,
-        style: TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.w700,
-          fontFamily: 'Poppins',
-          fontSize: size * 0.32,
-        ),
-      ),
-    );
-  }
-
-  Widget _chip(String label, bool active, bool isDark, VoidCallback onTap) {
+  Widget _filterChip(
+    String label,
+    bool active,
+    bool isDark,
+    VoidCallback onTap,
+  ) {
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
@@ -3590,33 +3960,40 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         decoration: BoxDecoration(
           color: active
               ? BF.accent
-              : (isDark
-                    ? Colors.white.withOpacity(0.07)
-                    : Colors.black.withOpacity(0.05)),
+              : (isDark ? Colors.white.withOpacity(0.07) : Colors.white),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: active
                 ? BF.accent
-                : (isDark ? BF.darkBorder : BF.lightBorder),
+                : (isDark ? BF.darkBorder : const Color(0xFFE2E8F0)),
             width: 1,
           ),
+          boxShadow: active
+              ? [
+                  BoxShadow(
+                    color: BF.accent.withOpacity(0.22),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ]
+              : [],
         ),
         child: Text(
           label,
           style: TextStyle(
             fontFamily: 'Poppins',
             fontSize: 12,
-            fontWeight: FontWeight.w600,
+            fontWeight: active ? FontWeight.w700 : FontWeight.w500,
             color: active
                 ? Colors.white
-                : (isDark ? Colors.white60 : Colors.black54),
+                : (isDark ? Colors.white60 : const Color(0xFF475569)),
           ),
         ),
       ),
     );
   }
 
-  Widget _toggle(
+  Widget _txToggle(
     String label,
     bool value,
     bool current,
@@ -3631,14 +4008,27 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         onTap: () => setS(() => fn()),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
-          margin: const EdgeInsets.all(4),
+          margin: const EdgeInsets.all(3),
           decoration: BoxDecoration(
-            color: sel ? (value ? BF.green : BF.red) : Colors.transparent,
+            gradient: sel
+                ? (value
+                      ? const LinearGradient(
+                          colors: [Color(0xFF00C9A7), Color(0xFF00E5A0)],
+                          begin: Alignment.centerLeft,
+                          end: Alignment.centerRight,
+                        )
+                      : const LinearGradient(
+                          colors: [Color(0xFFFF5A5F), Color(0xFFFF8A65)],
+                          begin: Alignment.centerLeft,
+                          end: Alignment.centerRight,
+                        ))
+                : null,
+            color: sel ? null : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
             boxShadow: sel
                 ? [
                     BoxShadow(
-                      color: (value ? BF.green : BF.red).withOpacity(0.3),
+                      color: (value ? BF.green : BF.red).withOpacity(0.25),
                       blurRadius: 8,
                       offset: const Offset(0, 3),
                     ),
@@ -3654,7 +4044,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               fontSize: isSmallScreen ? 12 : 14,
               color: sel
                   ? Colors.white
-                  : (isDark ? Colors.white54 : Colors.black45),
+                  : (isDark ? Colors.white38 : const Color(0xFF94A3B8)),
             ),
           ),
         ),
@@ -3676,163 +4066,48 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       style: TextStyle(
         fontFamily: 'Poppins',
         fontSize: isSmallScreen ? 13 : 14,
-        color: isDark ? Colors.white : Colors.black87,
+        color: _primaryText(isDark),
       ),
       decoration: InputDecoration(
         labelText: label,
         prefixText: prefix,
         prefixStyle: TextStyle(
           fontFamily: 'Poppins',
-          fontSize: isSmallScreen ? 12 : 13,
-          color: isDark ? Colors.white54 : Colors.black45,
+          fontSize: isSmallScreen ? 12 : 14,
+          fontWeight: FontWeight.w600,
+          color: _secondaryText(isDark),
         ),
         labelStyle: TextStyle(
           fontFamily: 'Poppins',
           fontSize: isSmallScreen ? 11 : 13,
-          color: isDark ? Colors.white38 : Colors.black38,
+          color: _secondaryText(isDark),
         ),
         filled: true,
-        fillColor: isDark ? BF.darkSurface : BF.lightBg,
+        fillColor: isDark ? BF.darkSurface : const Color(0xFFF8FAFC),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide.none,
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide(
-            color: isDark ? BF.darkBorder : BF.lightBorder,
-            width: 1,
-          ),
+          borderSide: BorderSide(color: _border(isDark), width: 1),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: const BorderSide(color: BF.accent, width: 1.5),
         ),
         contentPadding: EdgeInsets.symmetric(
-          horizontal: 14,
+          horizontal: 16,
           vertical: isSmallScreen ? 10 : 14,
         ),
       ),
     );
   }
 
-  Widget _profileLink(
-    bool isDark,
-    IconData icon,
-    String label,
-    Color color,
-    VoidCallback onTap,
-  ) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
-        decoration: BF.card(isDark),
-        child: Row(
-          children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: color.withOpacity(0.12),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(icon, color: color, size: 18),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Text(
-                label,
-                style: TextStyle(
-                  fontFamily: 'Poppins',
-                  fontWeight: FontWeight.w600,
-                  fontSize: 14,
-                  color: isDark ? Colors.white : Colors.black87,
-                ),
-              ),
-            ),
-            Icon(
-              Icons.chevron_right_rounded,
-              color: isDark ? Colors.white24 : Colors.black26,
-            ),
-          ],
-        ),
-      ),
-    );
+  String _getGreeting() {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Good Morning';
+    if (hour < 17) return 'Good Afternoon';
+    return 'Good Evening';
   }
-}
-
-// ─── Custom Donut Chart Painter ───────────────────────────────────────────────
-class _DonutChartPainter extends CustomPainter {
-  final double incomePercent;
-  final double expensePercent;
-  final Color incomeColor;
-  final Color expenseColor;
-
-  const _DonutChartPainter({
-    required this.incomePercent,
-    required this.expensePercent,
-    required this.incomeColor,
-    required this.expenseColor,
-  });
-
-  static const double _deg2rad = 3.14159265358979 / 180.0;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final radius = size.width / 2;
-    final strokeWidth = radius * 0.35;
-    final innerRadius = radius - strokeWidth / 2;
-
-    final bgPaint = Paint()
-      ..color = Colors.grey.withOpacity(0.1)
-      ..strokeWidth = strokeWidth
-      ..style = PaintingStyle.stroke;
-    canvas.drawCircle(center, innerRadius, bgPaint);
-
-    final incomeSweep = 360.0 * (incomePercent / 100.0);
-    if (incomePercent > 0) {
-      final incomePaint = Paint()
-        ..color = incomeColor
-        ..strokeWidth = strokeWidth
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round;
-      canvas.drawArc(
-        Rect.fromCircle(center: center, radius: innerRadius),
-        -90 * _deg2rad,
-        incomeSweep * _deg2rad,
-        false,
-        incomePaint,
-      );
-    }
-
-    if (expensePercent > 0) {
-      final expenseStart = -90.0 + incomeSweep;
-      final expenseSweep = 360.0 * (expensePercent / 100.0);
-      final expensePaint = Paint()
-        ..color = expenseColor
-        ..strokeWidth = strokeWidth
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round;
-      canvas.drawArc(
-        Rect.fromCircle(center: center, radius: innerRadius),
-        expenseStart * _deg2rad,
-        expenseSweep * _deg2rad,
-        false,
-        expensePaint,
-      );
-    }
-
-    final dotPaint = Paint()
-      ..color = Colors.white.withOpacity(0.05)
-      ..style = PaintingStyle.fill;
-    canvas.drawCircle(center, innerRadius - 15, dotPaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _DonutChartPainter old) =>
-      old.incomePercent != incomePercent ||
-      old.expensePercent != expensePercent;
 }
