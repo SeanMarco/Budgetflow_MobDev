@@ -1535,19 +1535,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   ],
 
                   // ── Budget progress section ────────────────────────────
-                  if (_s.budgets.isNotEmpty) ...[
-                    _sectionHeader(
-                      'Budget Tracker',
-                      isDark,
-                      action: _seeAllBtn(
-                        'View All',
-                        () => _pushAndReload(const BudgetPage()),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    _budgetProgressList(isDark),
-                    const SizedBox(height: 24),
-                  ],
 
                   // ── Savings goals ──────────────────────────────────────
                   if (_s.savingsGoals.isNotEmpty) ...[
@@ -2015,14 +2002,26 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   // ── Budget progress list ──────────────────────────────────────────────────
+  // ── Budget progress list (only show ACTIVE budgets, hide completed) ──────
+  // ── Budget progress list (HIDE completed budgets completely) ──────────────
   Widget _budgetProgressList(bool isDark) {
     final now = DateTime.now();
-    final budgets = _s.budgets.take(3).toList();
+    // ✅ CRITICAL: Only show budgets that are NOT completed
+    final activeBudgets = _s.budgets
+        .where((b) => (b['isCompleted'] as bool? ?? false) == false)
+        .take(3)
+        .toList();
+
+    // If no active budgets, show nothing (or a small message)
+    if (activeBudgets.isEmpty) {
+      return const SizedBox.shrink(); // Completely hide the section
+    }
+
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: _card(isDark),
       child: Column(
-        children: budgets.asMap().entries.map((entry) {
+        children: activeBudgets.asMap().entries.map((entry) {
           final i = entry.key;
           final b = entry.value;
           final category = b['category'] as String;
@@ -2039,13 +2038,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               )
               .fold(0.0, (s, tx) => s + (tx['amount'] as double));
           final progress = limit > 0 ? (spent / limit).clamp(0.0, 1.0) : 0.0;
-          final isOver = spent > limit;
-          final isNear = progress >= 0.8 && !isOver;
-          final barColor = isOver
-              ? BF.red
-              : isNear
-              ? BF.amber
-              : BF.green;
+          final isNear = progress >= 0.8 && progress < 1.0;
+          final barColor = isNear ? BF.amber : BF.green;
 
           return Column(
             children: [
@@ -2111,7 +2105,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   ],
                 ),
               ),
-              if (i < budgets.length - 1)
+              if (i < activeBudgets.length - 1)
                 Divider(
                   height: 1,
                   color: _border(isDark),

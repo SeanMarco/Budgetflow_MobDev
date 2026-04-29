@@ -19,9 +19,9 @@ class _BudgetPageState extends State<BudgetPage>
   // Tab controller for active/completed budgets
   late TabController _tabController;
 
-  // ── Filters (same as transactions) ───────────────────────────────────────
+  // ── Filters ───────────────────────────────────────────────────────────────
   String _searchQuery = '';
-  String _filterStatus = 'All'; // All | Over Budget | Near Limit | On Track
+  String _filterStatus = 'All'; // All | Near Limit | On Track
   String _filterCategory = 'All';
   DateTimeRange? _filterDateRange;
 
@@ -48,7 +48,6 @@ class _BudgetPageState extends State<BudgetPage>
     super.dispose();
   }
 
-  // ── Normalises DB values like "weekly"/"monthly" → "Weekly"/"Monthly"
   String _normalisePeriod(String raw) {
     if (raw.isEmpty) return 'Monthly';
     return raw[0].toUpperCase() + raw.substring(1).toLowerCase();
@@ -124,9 +123,6 @@ class _BudgetPageState extends State<BudgetPage>
     return emojiMap[category] ?? '💰';
   }
 
-  /// Returns spending for [category] that occurred STRICTLY AFTER the budget
-  /// was created, and (when no date-range filter is active) within the current
-  /// calendar month.
   double _getSpentForCategory(String category, {DateTime? budgetCreatedAt}) {
     final now = DateTime.now();
     final createdAt = budgetCreatedAt ?? DateTime(2000);
@@ -161,7 +157,6 @@ class _BudgetPageState extends State<BudgetPage>
         .fold(0.0, (sum, tx) => sum + (tx['amount'] as double));
   }
 
-  /// Check if a budget is completed (100% or over)
   bool _isBudgetCompleted(Map<String, dynamic> budget) {
     final spent = _getSpentForCategory(
       budget['category'] as String,
@@ -171,7 +166,6 @@ class _BudgetPageState extends State<BudgetPage>
     return spent >= limit;
   }
 
-  /// Mark budget as completed in database
   Future<void> _markBudgetCompleted(Map<String, dynamic> budget) async {
     if (budget['isCompleted'] as bool? ?? false) return;
 
@@ -182,7 +176,6 @@ class _BudgetPageState extends State<BudgetPage>
           .eq('id', int.parse(budget['id'] as String))
           .eq('user_id', _userId);
 
-      // Update local state
       _appState.updateBudget(budget['id'] as String, {
         ...budget,
         'isCompleted': true,
@@ -192,7 +185,6 @@ class _BudgetPageState extends State<BudgetPage>
     }
   }
 
-  /// Unmark budget as completed (if spending goes down due to refunds/edits)
   Future<void> _unmarkBudgetCompleted(Map<String, dynamic> budget) async {
     if (!(budget['isCompleted'] as bool? ?? false)) return;
 
@@ -212,7 +204,6 @@ class _BudgetPageState extends State<BudgetPage>
     }
   }
 
-  /// Check all active budgets and mark any that reached 100%
   Future<void> _checkAndUpdateBudgetCompletions() async {
     for (final budget in _appState.budgets) {
       final isCompleted = budget['isCompleted'] as bool? ?? false;
@@ -242,31 +233,18 @@ class _BudgetPageState extends State<BudgetPage>
     (sum, b) => sum + (b['limit'] as double),
   );
 
-  double _getRemainingForCategory(Map<String, dynamic> budget) {
-    final spent = _getSpentForCategory(
-      budget['category'] as String,
-      budgetCreatedAt: budget['createdAt'] as DateTime?,
-    );
-    return (budget['limit'] as double) - spent;
-  }
-
-  // ── Active budgets (not completed) ──────────────────────────────────────
   List<Map<String, dynamic>> get _activeBudgets {
     return _appState.budgets.where((b) {
-      final isCompleted = b['isCompleted'] as bool? ?? false;
-      return !isCompleted;
+      return !(b['isCompleted'] as bool? ?? false);
     }).toList();
   }
 
-  // ── Completed budgets ────────────────────────────────────────────────────
   List<Map<String, dynamic>> get _completedBudgets {
     return _appState.budgets.where((b) {
-      final isCompleted = b['isCompleted'] as bool? ?? false;
-      return isCompleted;
+      return (b['isCompleted'] as bool? ?? false);
     }).toList();
   }
 
-  // ── Filtered active budgets ──────────────────────────────────────────────
   List<Map<String, dynamic>> get _filteredActiveBudgets {
     return _activeBudgets.where((b) {
       final category = b['category'] as String;
@@ -276,8 +254,7 @@ class _BudgetPageState extends State<BudgetPage>
         budgetCreatedAt: b['createdAt'] as DateTime?,
       );
       final progress = limit > 0 ? spent / limit : 0.0;
-      final isOver = spent > limit;
-      final isNear = progress >= 0.8 && !isOver;
+      final isNear = progress >= 0.8 && progress < 1.0;
 
       if (_searchQuery.isNotEmpty) {
         if (!category.toLowerCase().contains(_searchQuery.toLowerCase())) {
@@ -289,15 +266,13 @@ class _BudgetPageState extends State<BudgetPage>
         return false;
       }
 
-      if (_filterStatus == 'Over Budget' && !isOver) return false;
       if (_filterStatus == 'Near Limit' && !isNear) return false;
-      if (_filterStatus == 'On Track' && (isOver || isNear)) return false;
+      if (_filterStatus == 'On Track' && isNear) return false;
 
       return true;
     }).toList();
   }
 
-  // ── Filtered completed budgets ──────────────────────────────────────────
   List<Map<String, dynamic>> get _filteredCompletedBudgets {
     return _completedBudgets.where((b) {
       final category = b['category'] as String;
@@ -325,7 +300,6 @@ class _BudgetPageState extends State<BudgetPage>
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    // Check for completed budgets periodically (when transactions change)
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkAndUpdateBudgetCompletions();
     });
@@ -348,12 +322,10 @@ class _BudgetPageState extends State<BudgetPage>
               onRefresh: _loadBudgets,
               child: Column(
                 children: [
-                  // ── Filter bar ────────────────────────────────────────────
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
                     child: Column(
                       children: [
-                        // Search field
                         Container(
                           height: 48,
                           decoration: BF
@@ -416,7 +388,6 @@ class _BudgetPageState extends State<BudgetPage>
                           ),
                         ),
                         const SizedBox(height: 12),
-                        // Filter chips (only show for active tab)
                         if (_tabController.index == 0)
                           SizedBox(
                             height: 34,
@@ -433,17 +404,6 @@ class _BudgetPageState extends State<BudgetPage>
                                     _filterCategory = 'All';
                                     _filterDateRange = null;
                                   }),
-                                ),
-                                _chip(
-                                  'Over Budget',
-                                  _filterStatus == 'Over Budget',
-                                  isDark,
-                                  () => setState(
-                                    () => _filterStatus =
-                                        _filterStatus == 'Over Budget'
-                                        ? 'All'
-                                        : 'Over Budget',
-                                  ),
                                 ),
                                 _chip(
                                   'Near Limit',
@@ -493,9 +453,8 @@ class _BudgetPageState extends State<BudgetPage>
                                       lastDate: DateTime.now(),
                                       initialDateRange: _filterDateRange,
                                     );
-                                    if (mounted) {
+                                    if (mounted)
                                       setState(() => _filterDateRange = r);
-                                    }
                                   },
                                 ),
                               ],
@@ -504,7 +463,6 @@ class _BudgetPageState extends State<BudgetPage>
                       ],
                     ),
                   ),
-                  // ── Tab Bar ───────────────────────────────────────────────
                   Container(
                     margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
                     decoration: BoxDecoration(
@@ -555,18 +513,15 @@ class _BudgetPageState extends State<BudgetPage>
                       ],
                     ),
                   ),
-                  // ── Summary bar (active tab only) ─────────────────────────
                   if (_tabController.index == 0 && _activeBudgets.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
                       child: _summaryBar(isDark),
                     ),
-                  // ── Content based on selected tab ───────────────────────
                   Expanded(
                     child: TabBarView(
                       controller: _tabController,
                       children: [
-                        // Active Budgets Tab
                         _activeBudgets.isEmpty
                             ? _emptyActiveView(isDark)
                             : _filteredActiveBudgets.isEmpty
@@ -588,7 +543,6 @@ class _BudgetPageState extends State<BudgetPage>
                                   ),
                                 ],
                               ),
-                        // Completed Budgets Tab
                         _completedBudgets.isEmpty
                             ? _emptyCompletedView(isDark)
                             : _filteredCompletedBudgets.isEmpty
@@ -620,7 +574,6 @@ class _BudgetPageState extends State<BudgetPage>
     );
   }
 
-  // ── Completed Budget Overview Card ───────────────────────────────────────
   Widget _completedOverviewCard(bool isDark) {
     final totalCompleted = _filteredCompletedBudgets.length;
     final totalOriginalLimit = _filteredCompletedBudgets.fold(
@@ -628,7 +581,6 @@ class _BudgetPageState extends State<BudgetPage>
       (sum, b) => sum + (b['limit'] as double),
     );
 
-    // Calculate total overspent amount for completed budgets
     final totalOverspent = _filteredCompletedBudgets.fold(0.0, (sum, b) {
       final spent = _getSpentForCategory(
         b['category'] as String,
@@ -746,7 +698,6 @@ class _BudgetPageState extends State<BudgetPage>
     );
   }
 
-  // ── Completed Budget Card ────────────────────────────────────────────────
   Widget _completedBudgetCard(Map<String, dynamic> budget, bool isDark) {
     final category = budget['category'] as String;
     final limit = budget['limit'] as double;
@@ -1005,7 +956,6 @@ class _BudgetPageState extends State<BudgetPage>
     );
   }
 
-  // ── Restart a completed budget plan ──────────────────────────────────────
   Future<void> _restartBudgetPlan(Map<String, dynamic> budget) async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final confirmed = await showDialog<bool>(
@@ -1091,15 +1041,15 @@ class _BudgetPageState extends State<BudgetPage>
     }
   }
 
-  // ── Summary bar ───────────────────────────────────────────────────────────
   Widget _summaryBar(bool isDark) {
     final filtered = _filteredActiveBudgets;
-    final overCount = filtered.where((b) {
+    final nearCount = filtered.where((b) {
       final spent = _getSpentForCategory(
         b['category'] as String,
         budgetCreatedAt: b['createdAt'] as DateTime?,
       );
-      return spent > (b['limit'] as double);
+      final progress = spent / (b['limit'] as double);
+      return progress >= 0.8 && progress < 1.0;
     }).length;
     final completedCount = filtered.where((b) => _isBudgetCompleted(b)).length;
 
@@ -1142,6 +1092,29 @@ class _BudgetPageState extends State<BudgetPage>
                     ],
                   ),
                 ),
+              if (nearCount > 0)
+                Padding(
+                  padding: const EdgeInsets.only(right: 10),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.warning_amber_rounded,
+                        size: 12,
+                        color: BF.amber,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        '$nearCount near limit',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: BF.amber,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               Text(
                 'Limit: ${currency.format(_getTotalLimit())}',
                 style: const TextStyle(
@@ -1151,18 +1124,6 @@ class _BudgetPageState extends State<BudgetPage>
                   color: BF.accent,
                 ),
               ),
-              if (overCount > 0) ...[
-                const SizedBox(width: 10),
-                Text(
-                  '$overCount over',
-                  style: const TextStyle(
-                    fontFamily: 'Poppins',
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: BF.red,
-                  ),
-                ),
-              ],
             ],
           ),
         ],
@@ -1237,9 +1198,9 @@ class _BudgetPageState extends State<BudgetPage>
       ),
       onPressed: () => Navigator.pop(context),
     ),
-    bottom: PreferredSize(
-      preferredSize: const Size.fromHeight(0),
-      child: Container(),
+    bottom: const PreferredSize(
+      preferredSize: Size.fromHeight(0),
+      child: SizedBox(),
     ),
   );
 
@@ -1346,7 +1307,7 @@ class _BudgetPageState extends State<BudgetPage>
               value: progress,
               backgroundColor: Colors.white.withOpacity(0.18),
               valueColor: AlwaysStoppedAnimation<Color>(
-                progress > 0.85 ? Colors.redAccent : Colors.white,
+                progress >= 0.85 ? Colors.redAccent : Colors.white,
               ),
               minHeight: 8,
             ),
@@ -1410,15 +1371,13 @@ class _BudgetPageState extends State<BudgetPage>
       category,
       budgetCreatedAt: budget['createdAt'] as DateTime?,
     );
-    final remaining = _getRemainingForCategory(budget);
+    final remaining = limit - spent;
     final progress = limit > 0 ? (spent / limit).clamp(0.0, 1.0) : 0.0;
-    final isOver = spent > limit;
-    final isNear = progress >= 0.8 && !isOver;
+    final isNear = progress >= 0.8 && progress < 1.0;
     final isCompleted = progress >= 1.0;
 
     Color barColor = BF.green;
-    if (isOver) barColor = BF.red;
-    if (isNear && !isCompleted) barColor = BF.amber;
+    if (isNear) barColor = BF.amber;
     if (isCompleted) barColor = BF.green;
 
     return Container(
@@ -1428,14 +1387,12 @@ class _BudgetPageState extends State<BudgetPage>
         color: isDark ? BF.darkCard : Colors.white,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: isOver
-              ? BF.red.withOpacity(0.35)
-              : isNear
+          color: isNear
               ? BF.amber.withOpacity(0.35)
               : isCompleted
               ? BF.green.withOpacity(0.5)
               : (isDark ? BF.darkBorder : BF.lightBorder),
-          width: isOver || isNear || isCompleted ? 1.5 : 1,
+          width: isNear || isCompleted ? 1.5 : 1,
         ),
         boxShadow: isDark
             ? []
@@ -1593,11 +1550,7 @@ class _BudgetPageState extends State<BudgetPage>
                       fontFamily: 'Poppins',
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
-                      color: isCompleted
-                          ? BF.green
-                          : remaining >= 0
-                          ? BF.green
-                          : BF.red,
+                      color: remaining >= 0 ? BF.green : BF.red,
                     ),
                   ),
                 ],
@@ -1616,7 +1569,7 @@ class _BudgetPageState extends State<BudgetPage>
               minHeight: 8,
             ),
           ),
-          if (isOver || isNear || isCompleted) ...[
+          if (isNear || isCompleted) ...[
             const SizedBox(height: 10),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1629,8 +1582,6 @@ class _BudgetPageState extends State<BudgetPage>
                   Icon(
                     isCompleted
                         ? Icons.celebration_rounded
-                        : isOver
-                        ? Icons.warning_rounded
                         : Icons.notifications_active_rounded,
                     size: 13,
                     color: barColor,
@@ -1640,8 +1591,6 @@ class _BudgetPageState extends State<BudgetPage>
                     child: Text(
                       isCompleted
                           ? '🎉 Congratulations! Budget target achieved!'
-                          : isOver
-                          ? 'Over budget by ${currency.format(spent - limit)}'
                           : 'Nearing limit — ${currency.format(remaining)} remaining',
                       style: TextStyle(
                         fontSize: 11,
@@ -1942,7 +1891,6 @@ class _BudgetPageState extends State<BudgetPage>
     );
   }
 
-  // ── Add / Edit Budget Sheet ───────────────────────────────────────────────
   static const List<Map<String, dynamic>> _budgetCategories = [
     {'label': 'Food', 'emoji': '🍜', 'color': Color(0xFFFF6B6B)},
     {'label': 'Transportation', 'emoji': '🚗', 'color': Color(0xFF4ECDC4)},
@@ -2426,9 +2374,8 @@ class _BudgetPageState extends State<BudgetPage>
                                       );
                                     }
                                   } finally {
-                                    if (ctx.mounted) {
+                                    if (ctx.mounted)
                                       setS(() => isSaving = false);
-                                    }
                                   }
                                 },
                           child: isSaving
@@ -2461,7 +2408,6 @@ class _BudgetPageState extends State<BudgetPage>
     });
   }
 
-  // ── Category helpers ──────────────────────────────────────────────────────
   Color _categoryColor(String label) {
     try {
       return _budgetCategories.firstWhere((c) => c['label'] == label)['color']
@@ -2533,7 +2479,7 @@ class _BudgetPageState extends State<BudgetPage>
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: BF.accent, width: 1.5),
+          borderSide: BorderSide(color: BF.accent, width: 1.5),
         ),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 16,
