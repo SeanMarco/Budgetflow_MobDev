@@ -10,10 +10,14 @@ class BudgetPage extends StatefulWidget {
   State<BudgetPage> createState() => _BudgetPageState();
 }
 
-class _BudgetPageState extends State<BudgetPage> {
+class _BudgetPageState extends State<BudgetPage>
+    with SingleTickerProviderStateMixin {
   final currency = NumberFormat.currency(locale: 'en_PH', symbol: '₱');
   bool _isLoading = false;
   late AppState _appState;
+
+  // Tab controller for active/completed budgets
+  late TabController _tabController;
 
   // ── Filters (same as transactions) ───────────────────────────────────────
   String _searchQuery = '';
@@ -32,6 +36,7 @@ class _BudgetPageState extends State<BudgetPage> {
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 2, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _loadBudgets();
     });
@@ -39,11 +44,11 @@ class _BudgetPageState extends State<BudgetPage> {
 
   @override
   void dispose() {
+    _tabController.dispose();
     super.dispose();
   }
 
   // ── Normalises DB values like "weekly"/"monthly" → "Weekly"/"Monthly"
-  // so they match the period toggle labels in the sheet.
   String _normalisePeriod(String raw) {
     if (raw.isEmpty) return 'Monthly';
     return raw[0].toUpperCase() + raw.substring(1).toLowerCase();
@@ -66,12 +71,12 @@ class _BudgetPageState extends State<BudgetPage> {
           'id': budget['id'].toString(),
           'category': budget['category'] as String,
           'limit': (budget['budget_limit'] as num).toDouble(),
-          // ✅ FIX: read from DB; normalise capitalisation; fall back to 'Monthly'
           'period': _normalisePeriod(budget['period'] as String? ?? 'Monthly'),
           'emoji': _getEmojiForCategory(budget['category'] as String),
           'createdAt': budget['created_at'] != null
               ? DateTime.parse(budget['created_at'] as String)
               : DateTime(2000),
+          'isCompleted': budget['is_completed'] as bool? ?? false,
         });
       }
     } catch (e) {
@@ -127,7 +132,6 @@ class _BudgetPageState extends State<BudgetPage> {
     final createdAt = budgetCreatedAt ?? DateTime(2000);
 
     if (_filterDateRange != null) {
-      // Respect whichever is later: the budget creation time or the filter start
       final rangeStart = _filterDateRange!.start.isAfter(createdAt)
           ? _filterDateRange!.start
           : createdAt;
@@ -150,16 +154,80 @@ class _BudgetPageState extends State<BudgetPage> {
           (tx) =>
               tx['category'] == category &&
               !(tx['isIncome'] as bool) &&
-              // STRICTLY after creation — no pre-existing transactions counted
               (tx['date'] as DateTime).isAfter(createdAt) &&
-              // Current month only
               (tx['date'] as DateTime).month == now.month &&
               (tx['date'] as DateTime).year == now.year,
         )
         .fold(0.0, (sum, tx) => sum + (tx['amount'] as double));
   }
 
-  double _getTotalSpent() => _filteredBudgets.fold(
+  /// Check if a budget is completed (100% or over)
+  bool _isBudgetCompleted(Map<String, dynamic> budget) {
+    final spent = _getSpentForCategory(
+      budget['category'] as String,
+      budgetCreatedAt: budget['createdAt'] as DateTime?,
+    );
+    final limit = budget['limit'] as double;
+    return spent >= limit;
+  }
+
+  /// Mark budget as completed in database
+  Future<void> _markBudgetCompleted(Map<String, dynamic> budget) async {
+    if (budget['isCompleted'] as bool? ?? false) return;
+
+    try {
+      await supabase
+          .from('budgets')
+          .update({'is_completed': true})
+          .eq('id', int.parse(budget['id'] as String))
+          .eq('user_id', _userId);
+
+      // Update local state
+      _appState.updateBudget(budget['id'] as String, {
+        ...budget,
+        'isCompleted': true,
+      });
+    } catch (e) {
+      debugPrint('Error marking budget as completed: $e');
+    }
+  }
+
+  /// Unmark budget as completed (if spending goes down due to refunds/edits)
+  Future<void> _unmarkBudgetCompleted(Map<String, dynamic> budget) async {
+    if (!(budget['isCompleted'] as bool? ?? false)) return;
+
+    try {
+      await supabase
+          .from('budgets')
+          .update({'is_completed': false})
+          .eq('id', int.parse(budget['id'] as String))
+          .eq('user_id', _userId);
+
+      _appState.updateBudget(budget['id'] as String, {
+        ...budget,
+        'isCompleted': false,
+      });
+    } catch (e) {
+      debugPrint('Error unmarking budget completion: $e');
+    }
+  }
+
+  /// Check all active budgets and mark any that reached 100%
+  Future<void> _checkAndUpdateBudgetCompletions() async {
+    for (final budget in _appState.budgets) {
+      final isCompleted = budget['isCompleted'] as bool? ?? false;
+      final shouldBeCompleted = _isBudgetCompleted(budget);
+
+      if (shouldBeCompleted && !isCompleted) {
+        await _markBudgetCompleted(budget);
+      } else if (!shouldBeCompleted && isCompleted) {
+        await _unmarkBudgetCompleted(budget);
+      }
+    }
+    if (mounted) setState(() {});
+  }
+
+  double _getTotalSpent() => _filteredActiveBudgets.fold(
     0.0,
     (sum, b) =>
         sum +
@@ -169,8 +237,10 @@ class _BudgetPageState extends State<BudgetPage> {
         ),
   );
 
-  double _getTotalLimit() =>
-      _filteredBudgets.fold(0.0, (sum, b) => sum + (b['limit'] as double));
+  double _getTotalLimit() => _filteredActiveBudgets.fold(
+    0.0,
+    (sum, b) => sum + (b['limit'] as double),
+  );
 
   double _getRemainingForCategory(Map<String, dynamic> budget) {
     final spent = _getSpentForCategory(
@@ -180,9 +250,25 @@ class _BudgetPageState extends State<BudgetPage> {
     return (budget['limit'] as double) - spent;
   }
 
-  // ── Filtered budgets ──────────────────────────────────────────────────────
-  List<Map<String, dynamic>> get _filteredBudgets {
+  // ── Active budgets (not completed) ──────────────────────────────────────
+  List<Map<String, dynamic>> get _activeBudgets {
     return _appState.budgets.where((b) {
+      final isCompleted = b['isCompleted'] as bool? ?? false;
+      return !isCompleted;
+    }).toList();
+  }
+
+  // ── Completed budgets ────────────────────────────────────────────────────
+  List<Map<String, dynamic>> get _completedBudgets {
+    return _appState.budgets.where((b) {
+      final isCompleted = b['isCompleted'] as bool? ?? false;
+      return isCompleted;
+    }).toList();
+  }
+
+  // ── Filtered active budgets ──────────────────────────────────────────────
+  List<Map<String, dynamic>> get _filteredActiveBudgets {
+    return _activeBudgets.where((b) {
       final category = b['category'] as String;
       final limit = b['limit'] as double;
       final spent = _getSpentForCategory(
@@ -211,6 +297,25 @@ class _BudgetPageState extends State<BudgetPage> {
     }).toList();
   }
 
+  // ── Filtered completed budgets ──────────────────────────────────────────
+  List<Map<String, dynamic>> get _filteredCompletedBudgets {
+    return _completedBudgets.where((b) {
+      final category = b['category'] as String;
+
+      if (_searchQuery.isNotEmpty) {
+        if (!category.toLowerCase().contains(_searchQuery.toLowerCase())) {
+          return false;
+        }
+      }
+
+      if (_filterCategory != 'All' && category != _filterCategory) {
+        return false;
+      }
+
+      return true;
+    }).toList();
+  }
+
   List<String> get _categoryOptions => [
     'All',
     ..._appState.budgets.map((b) => b['category'] as String).toSet(),
@@ -219,6 +324,11 @@ class _BudgetPageState extends State<BudgetPage> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    // Check for completed budgets periodically (when transactions change)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkAndUpdateBudgetCompletions();
+    });
 
     if (_isLoading) {
       return Scaffold(
@@ -230,7 +340,7 @@ class _BudgetPageState extends State<BudgetPage> {
 
     return Scaffold(
       backgroundColor: isDark ? BF.darkBg : BF.lightBg,
-      appBar: _appBar(isDark),
+      appBar: _appBarWithTabs(isDark),
       body: _appState.budgets.isEmpty
           ? _emptyView(isDark)
           : RefreshIndicator(
@@ -306,115 +416,202 @@ class _BudgetPageState extends State<BudgetPage> {
                           ),
                         ),
                         const SizedBox(height: 12),
-                        // Filter chips
-                        SizedBox(
-                          height: 34,
-                          child: ListView(
-                            scrollDirection: Axis.horizontal,
-                            children: [
-                              _chip(
-                                'All',
-                                _filterStatus == 'All' &&
-                                    _filterCategory == 'All',
-                                isDark,
-                                () => setState(() {
-                                  _filterStatus = 'All';
-                                  _filterCategory = 'All';
-                                  _filterDateRange = null;
-                                }),
-                              ),
-                              _chip(
-                                'Over Budget',
-                                _filterStatus == 'Over Budget',
-                                isDark,
-                                () => setState(
-                                  () => _filterStatus =
-                                      _filterStatus == 'Over Budget'
-                                      ? 'All'
-                                      : 'Over Budget',
+                        // Filter chips (only show for active tab)
+                        if (_tabController.index == 0)
+                          SizedBox(
+                            height: 34,
+                            child: ListView(
+                              scrollDirection: Axis.horizontal,
+                              children: [
+                                _chip(
+                                  'All',
+                                  _filterStatus == 'All' &&
+                                      _filterCategory == 'All',
+                                  isDark,
+                                  () => setState(() {
+                                    _filterStatus = 'All';
+                                    _filterCategory = 'All';
+                                    _filterDateRange = null;
+                                  }),
                                 ),
-                              ),
-                              _chip(
-                                'Near Limit',
-                                _filterStatus == 'Near Limit',
-                                isDark,
-                                () => setState(
-                                  () => _filterStatus =
-                                      _filterStatus == 'Near Limit'
-                                      ? 'All'
-                                      : 'Near Limit',
+                                _chip(
+                                  'Over Budget',
+                                  _filterStatus == 'Over Budget',
+                                  isDark,
+                                  () => setState(
+                                    () => _filterStatus =
+                                        _filterStatus == 'Over Budget'
+                                        ? 'All'
+                                        : 'Over Budget',
+                                  ),
                                 ),
-                              ),
-                              _chip(
-                                'On Track',
-                                _filterStatus == 'On Track',
-                                isDark,
-                                () => setState(
-                                  () => _filterStatus =
-                                      _filterStatus == 'On Track'
-                                      ? 'All'
-                                      : 'On Track',
+                                _chip(
+                                  'Near Limit',
+                                  _filterStatus == 'Near Limit',
+                                  isDark,
+                                  () => setState(
+                                    () => _filterStatus =
+                                        _filterStatus == 'Near Limit'
+                                        ? 'All'
+                                        : 'Near Limit',
+                                  ),
                                 ),
-                              ),
-                              ..._categoryOptions
-                                  .where((c) => c != 'All')
-                                  .map(
-                                    (c) => _chip(
-                                      c,
-                                      _filterCategory == c,
-                                      isDark,
-                                      () => setState(
-                                        () => _filterCategory =
-                                            _filterCategory == c ? 'All' : c,
+                                _chip(
+                                  'On Track',
+                                  _filterStatus == 'On Track',
+                                  isDark,
+                                  () => setState(
+                                    () => _filterStatus =
+                                        _filterStatus == 'On Track'
+                                        ? 'All'
+                                        : 'On Track',
+                                  ),
+                                ),
+                                ..._categoryOptions
+                                    .where((c) => c != 'All')
+                                    .map(
+                                      (c) => _chip(
+                                        c,
+                                        _filterCategory == c,
+                                        isDark,
+                                        () => setState(
+                                          () => _filterCategory =
+                                              _filterCategory == c ? 'All' : c,
+                                        ),
                                       ),
                                     ),
-                                  ),
-                              _chip(
-                                _filterDateRange != null
-                                    ? '📅 Date ✓'
-                                    : '📅 Date',
-                                _filterDateRange != null,
-                                isDark,
-                                () async {
-                                  final r = await showDateRangePicker(
-                                    context: context,
-                                    firstDate: DateTime(2020),
-                                    lastDate: DateTime.now(),
-                                    initialDateRange: _filterDateRange,
-                                  );
-                                  if (mounted) {
-                                    setState(() => _filterDateRange = r);
-                                  }
-                                },
-                              ),
+                                _chip(
+                                  _filterDateRange != null
+                                      ? '📅 Date ✓'
+                                      : '📅 Date',
+                                  _filterDateRange != null,
+                                  isDark,
+                                  () async {
+                                    final r = await showDateRangePicker(
+                                      context: context,
+                                      firstDate: DateTime(2020),
+                                      lastDate: DateTime.now(),
+                                      initialDateRange: _filterDateRange,
+                                    );
+                                    if (mounted) {
+                                      setState(() => _filterDateRange = r);
+                                    }
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  // ── Tab Bar ───────────────────────────────────────────────
+                  Container(
+                    margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                    decoration: BoxDecoration(
+                      color: isDark ? BF.darkSurface : BF.lightBg,
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    child: TabBar(
+                      controller: _tabController,
+                      indicator: BoxDecoration(
+                        color: BF.accent,
+                        borderRadius: BorderRadius.circular(30),
+                      ),
+                      labelColor: Colors.white,
+                      unselectedLabelColor: isDark
+                          ? Colors.white54
+                          : Colors.black54,
+                      labelStyle: const TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      unselectedLabelStyle: const TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      tabs: [
+                        Tab(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.trending_up_rounded, size: 16),
+                              const SizedBox(width: 6),
+                              Text('Active (${_activeBudgets.length})'),
+                            ],
+                          ),
+                        ),
+                        Tab(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.check_circle_rounded, size: 16),
+                              const SizedBox(width: 6),
+                              Text('Completed (${_completedBudgets.length})'),
                             ],
                           ),
                         ),
                       ],
                     ),
                   ),
-                  // ── Summary bar ───────────────────────────────────────────
-                  if (_appState.budgets.isNotEmpty)
+                  // ── Summary bar (active tab only) ─────────────────────────
+                  if (_tabController.index == 0 && _activeBudgets.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
                       child: _summaryBar(isDark),
                     ),
-                  // ── Budget list ───────────────────────────────────────────
+                  // ── Content based on selected tab ───────────────────────
                   Expanded(
-                    child: _filteredBudgets.isEmpty
-                        ? _emptyFilterView(isDark)
-                        : ListView(
-                            padding: const EdgeInsets.fromLTRB(20, 14, 20, 100),
-                            children: [
-                              _overviewCard(isDark),
-                              const SizedBox(height: 20),
-                              _sectionLabel('Your Budgets', isDark),
-                              const SizedBox(height: 12),
-                              ..._filteredBudgets.map(
-                                (b) => _budgetCard(b, isDark),
+                    child: TabBarView(
+                      controller: _tabController,
+                      children: [
+                        // Active Budgets Tab
+                        _activeBudgets.isEmpty
+                            ? _emptyActiveView(isDark)
+                            : _filteredActiveBudgets.isEmpty
+                            ? _emptyFilterView(isDark)
+                            : ListView(
+                                padding: const EdgeInsets.fromLTRB(
+                                  20,
+                                  14,
+                                  20,
+                                  100,
+                                ),
+                                children: [
+                                  _overviewCard(isDark),
+                                  const SizedBox(height: 20),
+                                  _sectionLabel('Active Budgets', isDark),
+                                  const SizedBox(height: 12),
+                                  ..._filteredActiveBudgets.map(
+                                    (b) => _budgetCard(b, isDark),
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
+                        // Completed Budgets Tab
+                        _completedBudgets.isEmpty
+                            ? _emptyCompletedView(isDark)
+                            : _filteredCompletedBudgets.isEmpty
+                            ? _emptyFilterView(isDark)
+                            : ListView(
+                                padding: const EdgeInsets.fromLTRB(
+                                  20,
+                                  14,
+                                  20,
+                                  100,
+                                ),
+                                children: [
+                                  _completedOverviewCard(isDark),
+                                  const SizedBox(height: 20),
+                                  _sectionLabel('Completed Plans', isDark),
+                                  const SizedBox(height: 12),
+                                  ..._filteredCompletedBudgets.map(
+                                    (b) => _completedBudgetCard(b, isDark),
+                                  ),
+                                ],
+                              ),
+                      ],
+                    ),
                   ),
                 ],
               ),
@@ -423,9 +620,480 @@ class _BudgetPageState extends State<BudgetPage> {
     );
   }
 
+  // ── Completed Budget Overview Card ───────────────────────────────────────
+  Widget _completedOverviewCard(bool isDark) {
+    final totalCompleted = _filteredCompletedBudgets.length;
+    final totalOriginalLimit = _filteredCompletedBudgets.fold(
+      0.0,
+      (sum, b) => sum + (b['limit'] as double),
+    );
+
+    // Calculate total overspent amount for completed budgets
+    final totalOverspent = _filteredCompletedBudgets.fold(0.0, (sum, b) {
+      final spent = _getSpentForCategory(
+        b['category'] as String,
+        budgetCreatedAt: b['createdAt'] as DateTime?,
+      );
+      final limit = b['limit'] as double;
+      final overAmount = spent - limit;
+      return sum + (overAmount > 0 ? overAmount : 0);
+    });
+
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [BF.green.withOpacity(0.8), BF.accentSoft.withOpacity(0.6)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: BF.green.withOpacity(0.3),
+            blurRadius: 28,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '🏆 Achievements',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.9),
+                  fontFamily: 'Poppins',
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 5,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '$totalCompleted Completed',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontFamily: 'Poppins',
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Text(
+            currency.format(totalOriginalLimit),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 34,
+              fontWeight: FontWeight.w700,
+              fontFamily: 'Poppins',
+              letterSpacing: -0.8,
+            ),
+          ),
+          Text(
+            'original budget limit${totalCompleted != 1 ? 's' : ''} achieved',
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.8),
+              fontFamily: 'Poppins',
+              fontSize: 13,
+            ),
+          ),
+          if (totalOverspent > 0) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.warning_rounded,
+                    color: Colors.white,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '⚠️ Total overspent: ${currency.format(totalOverspent)} across completed budgets',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontFamily: 'Poppins',
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // ── Completed Budget Card ────────────────────────────────────────────────
+  Widget _completedBudgetCard(Map<String, dynamic> budget, bool isDark) {
+    final category = budget['category'] as String;
+    final limit = budget['limit'] as double;
+    final spent = _getSpentForCategory(
+      category,
+      budgetCreatedAt: budget['createdAt'] as DateTime?,
+    );
+    final overspent = spent - limit;
+    final period = budget['period'] as String? ?? 'Monthly';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: isDark ? BF.darkCard : Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: BF.green.withOpacity(0.35), width: 1.5),
+        boxShadow: isDark
+            ? []
+            : [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 12,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: BF.green.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: Center(
+                  child: Text(
+                    budget['emoji'] as String? ?? '💰',
+                    style: const TextStyle(fontSize: 20),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      category,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontFamily: 'Poppins',
+                        fontSize: 15,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                    ),
+                    Text(
+                      period,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontFamily: 'Poppins',
+                        color: isDark ? Colors.white38 : Colors.black38,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 5,
+                ),
+                decoration: BoxDecoration(
+                  color: BF.green.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    Icon(Icons.check_circle, size: 14, color: BF.green),
+                    SizedBox(width: 4),
+                    Text(
+                      'Completed',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontFamily: 'Poppins',
+                        fontWeight: FontWeight.w600,
+                        color: BF.green,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              PopupMenuButton<String>(
+                color: isDark ? BF.darkCard : Colors.white,
+                icon: Icon(
+                  Icons.more_vert_rounded,
+                  color: isDark ? Colors.white38 : Colors.black38,
+                ),
+                itemBuilder: (_) => [
+                  PopupMenuItem<String>(
+                    value: 'restart',
+                    child: _menuRow(
+                      Icons.refresh_rounded,
+                      'Restart Plan',
+                      isDark,
+                    ),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'delete',
+                    child: _menuRow(
+                      Icons.delete_rounded,
+                      'Delete',
+                      isDark,
+                      danger: true,
+                    ),
+                  ),
+                ],
+                onSelected: (String val) async {
+                  if (val == 'delete') await _deleteBudget(budget);
+                  if (val == 'restart') await _restartBudgetPlan(budget);
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        currency.format(spent),
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontFamily: 'Poppins',
+                          fontSize: 20,
+                          color: overspent > 0 ? BF.red : BF.green,
+                        ),
+                      ),
+                      if (overspent > 0) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: BF.red.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            '${currency.format(overspent)} over',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontFamily: 'Poppins',
+                              fontWeight: FontWeight.w600,
+                              color: BF.red,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  Text(
+                    'spent of ${currency.format(limit)}',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 12,
+                      color: isDark ? Colors.white38 : Colors.black38,
+                    ),
+                  ),
+                ],
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    '🏆 Completed',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontFamily: 'Poppins',
+                      fontSize: 14,
+                      color: BF.green,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Target reached!',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 11,
+                      color: isDark ? Colors.white38 : Colors.black38,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: LinearProgressIndicator(
+              value: 1.0,
+              backgroundColor: isDark
+                  ? Colors.white.withOpacity(0.07)
+                  : Colors.black.withOpacity(0.05),
+              valueColor: const AlwaysStoppedAnimation<Color>(BF.green),
+              minHeight: 8,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: overspent > 0
+                  ? BF.red.withOpacity(0.08)
+                  : BF.green.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  overspent > 0
+                      ? Icons.warning_rounded
+                      : Icons.celebration_rounded,
+                  size: 13,
+                  color: overspent > 0 ? BF.red : BF.green,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    overspent > 0
+                        ? 'Target reached but overspent by ${currency.format(overspent)}'
+                        : '🎉 Congratulations! Budget target achieved!',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontFamily: 'Poppins',
+                      color: overspent > 0 ? BF.red : BF.green,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Restart a completed budget plan ──────────────────────────────────────
+  Future<void> _restartBudgetPlan(Map<String, dynamic> budget) async {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? BF.darkCard : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text(
+          'Restart Budget Plan?',
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            fontWeight: FontWeight.w700,
+            color: isDark ? Colors.white : Colors.black87,
+          ),
+        ),
+        content: Text(
+          'Restarting "${budget['category']}" will mark it as active again. This will not delete past transactions.',
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            fontSize: 13,
+            color: isDark ? Colors.white54 : Colors.black54,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(fontFamily: 'Poppins', color: BF.accent),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              'Restart',
+              style: TextStyle(fontFamily: 'Poppins', color: BF.accent),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await supabase
+          .from('budgets')
+          .update({'is_completed': false})
+          .eq('id', int.parse(budget['id'] as String))
+          .eq('user_id', _userId);
+
+      _appState.updateBudget(budget['id'] as String, {
+        ...budget,
+        'isCompleted': false,
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Budget plan restarted!',
+              style: TextStyle(fontFamily: 'Poppins'),
+            ),
+            backgroundColor: BF.accent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        setState(() {});
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Error restarting budget: $e',
+              style: const TextStyle(fontFamily: 'Poppins'),
+            ),
+            backgroundColor: BF.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
   // ── Summary bar ───────────────────────────────────────────────────────────
   Widget _summaryBar(bool isDark) {
-    final filtered = _filteredBudgets;
+    final filtered = _filteredActiveBudgets;
     final overCount = filtered.where((b) {
       final spent = _getSpentForCategory(
         b['category'] as String,
@@ -433,6 +1101,7 @@ class _BudgetPageState extends State<BudgetPage> {
       );
       return spent > (b['limit'] as double);
     }).length;
+    final completedCount = filtered.where((b) => _isBudgetCompleted(b)).length;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -445,7 +1114,7 @@ class _BudgetPageState extends State<BudgetPage> {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text(
-            '${filtered.length} budget${filtered.length != 1 ? 's' : ''}',
+            '${filtered.length} active budget${filtered.length != 1 ? 's' : ''}',
             style: TextStyle(
               fontFamily: 'Poppins',
               fontSize: 11,
@@ -454,6 +1123,25 @@ class _BudgetPageState extends State<BudgetPage> {
           ),
           Row(
             children: [
+              if (completedCount > 0)
+                Padding(
+                  padding: const EdgeInsets.only(right: 10),
+                  child: Row(
+                    children: [
+                      Icon(Icons.check_circle, size: 12, color: BF.green),
+                      const SizedBox(width: 4),
+                      Text(
+                        '$completedCount completed',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: BF.green,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               Text(
                 'Limit: ${currency.format(_getTotalLimit())}',
                 style: const TextStyle(
@@ -529,6 +1217,32 @@ class _BudgetPageState extends State<BudgetPage> {
     ),
   );
 
+  PreferredSizeWidget _appBarWithTabs(bool isDark) => AppBar(
+    backgroundColor: isDark ? BF.darkBg : BF.lightBg,
+    elevation: 0,
+    centerTitle: true,
+    title: Text(
+      'Budget Manager',
+      style: TextStyle(
+        fontFamily: 'Poppins',
+        fontWeight: FontWeight.w700,
+        fontSize: 18,
+        color: isDark ? Colors.white : Colors.black87,
+      ),
+    ),
+    leading: IconButton(
+      icon: Icon(
+        Icons.arrow_back_ios_rounded,
+        color: isDark ? Colors.white : Colors.black87,
+      ),
+      onPressed: () => Navigator.pop(context),
+    ),
+    bottom: PreferredSize(
+      preferredSize: const Size.fromHeight(0),
+      child: Container(),
+    ),
+  );
+
   Widget _sectionLabel(String text, bool isDark) => Text(
     text,
     style: TextStyle(
@@ -546,6 +1260,9 @@ class _BudgetPageState extends State<BudgetPage> {
     final progress = totalLimit > 0
         ? (totalSpent / totalLimit).clamp(0.0, 1.0)
         : 0.0;
+    final completedCount = _filteredActiveBudgets
+        .where((b) => _isBudgetCompleted(b))
+        .length;
 
     final periodLabel = _filterDateRange != null
         ? '${DateFormat('MMM d').format(_filterDateRange!.start)} – ${DateFormat('MMM d').format(_filterDateRange!.end)}'
@@ -656,6 +1373,31 @@ class _BudgetPageState extends State<BudgetPage> {
               ),
             ],
           ),
+          if (completedCount > 0) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.celebration, size: 14, color: Colors.white),
+                  const SizedBox(width: 6),
+                  Text(
+                    '$completedCount budget${completedCount != 1 ? 's' : ''} completed! 🎉',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontFamily: 'Poppins',
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -672,10 +1414,12 @@ class _BudgetPageState extends State<BudgetPage> {
     final progress = limit > 0 ? (spent / limit).clamp(0.0, 1.0) : 0.0;
     final isOver = spent > limit;
     final isNear = progress >= 0.8 && !isOver;
+    final isCompleted = progress >= 1.0;
 
     Color barColor = BF.green;
     if (isOver) barColor = BF.red;
-    if (isNear) barColor = BF.amber;
+    if (isNear && !isCompleted) barColor = BF.amber;
+    if (isCompleted) barColor = BF.green;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
@@ -688,8 +1432,10 @@ class _BudgetPageState extends State<BudgetPage> {
               ? BF.red.withOpacity(0.35)
               : isNear
               ? BF.amber.withOpacity(0.35)
+              : isCompleted
+              ? BF.green.withOpacity(0.5)
               : (isDark ? BF.darkBorder : BF.lightBorder),
-          width: isOver || isNear ? 1.5 : 1,
+          width: isOver || isNear || isCompleted ? 1.5 : 1,
         ),
         boxShadow: isDark
             ? []
@@ -734,7 +1480,6 @@ class _BudgetPageState extends State<BudgetPage> {
                         color: isDark ? Colors.white : Colors.black87,
                       ),
                     ),
-                    // ✅ FIX: now shows the actual period read from DB
                     Text(
                       budget['period'] as String? ?? 'Monthly',
                       style: TextStyle(
@@ -746,6 +1491,34 @@ class _BudgetPageState extends State<BudgetPage> {
                   ],
                 ),
               ),
+              if (isCompleted)
+                Container(
+                  margin: const EdgeInsets.only(right: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: BF.green.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: const [
+                      Icon(Icons.check_circle, size: 12, color: BF.green),
+                      SizedBox(width: 4),
+                      Text(
+                        'Done!',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontFamily: 'Poppins',
+                          fontWeight: FontWeight.w600,
+                          color: BF.green,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               PopupMenuButton<String>(
                 color: isDark ? BF.darkCard : Colors.white,
                 icon: Icon(
@@ -813,12 +1586,18 @@ class _BudgetPageState extends State<BudgetPage> {
                     ),
                   ),
                   Text(
-                    '${currency.format(remaining)} left',
+                    isCompleted
+                        ? 'Target reached! 🎉'
+                        : '${currency.format(remaining)} left',
                     style: TextStyle(
                       fontFamily: 'Poppins',
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
-                      color: remaining >= 0 ? BF.green : BF.red,
+                      color: isCompleted
+                          ? BF.green
+                          : remaining >= 0
+                          ? BF.green
+                          : BF.red,
                     ),
                   ),
                 ],
@@ -837,7 +1616,7 @@ class _BudgetPageState extends State<BudgetPage> {
               minHeight: 8,
             ),
           ),
-          if (isOver || isNear) ...[
+          if (isOver || isNear || isCompleted) ...[
             const SizedBox(height: 10),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -848,7 +1627,9 @@ class _BudgetPageState extends State<BudgetPage> {
               child: Row(
                 children: [
                   Icon(
-                    isOver
+                    isCompleted
+                        ? Icons.celebration_rounded
+                        : isOver
                         ? Icons.warning_rounded
                         : Icons.notifications_active_rounded,
                     size: 13,
@@ -857,7 +1638,9 @@ class _BudgetPageState extends State<BudgetPage> {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      isOver
+                      isCompleted
+                          ? '🎉 Congratulations! Budget target achieved!'
+                          : isOver
                           ? 'Over budget by ${currency.format(spent - limit)}'
                           : 'Nearing limit — ${currency.format(remaining)} remaining',
                       style: TextStyle(
@@ -992,6 +1775,86 @@ class _BudgetPageState extends State<BudgetPage> {
     ),
   );
 
+  Widget _emptyActiveView(bool isDark) => Center(
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Container(
+          width: 60,
+          height: 60,
+          decoration: BoxDecoration(
+            color: BF.accent.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: const Icon(
+            Icons.trending_up_rounded,
+            size: 28,
+            color: BF.accent,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'No active budgets',
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            fontWeight: FontWeight.w600,
+            fontSize: 15,
+            color: isDark ? Colors.white54 : Colors.black45,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Completed budgets appear in the Completed tab',
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            fontSize: 12,
+            color: isDark ? Colors.white38 : Colors.black38,
+          ),
+        ),
+      ],
+    ),
+  );
+
+  Widget _emptyCompletedView(bool isDark) => Center(
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Container(
+          width: 60,
+          height: 60,
+          decoration: BoxDecoration(
+            color: BF.green.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: const Icon(
+            Icons.celebration_rounded,
+            size: 28,
+            color: BF.green,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'No completed budgets yet',
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            fontWeight: FontWeight.w600,
+            fontSize: 15,
+            color: isDark ? Colors.white54 : Colors.black45,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Budgets will appear here when they reach 100%',
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            fontSize: 12,
+            color: isDark ? Colors.white38 : Colors.black38,
+          ),
+        ),
+      ],
+    ),
+  );
+
   Widget _emptyFilterView(bool isDark) => Center(
     child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -1110,7 +1973,6 @@ class _BudgetPageState extends State<BudgetPage> {
     );
     final customCategoryCtrl = TextEditingController();
 
-    // ✅ FIX: seed period from the existing budget's persisted value
     String period = existing?['period'] as String? ?? 'Monthly';
     String selectedCategory = existing?['category'] as String? ?? '';
     bool isCustomCategory =
@@ -1459,13 +2321,13 @@ class _BudgetPageState extends State<BudgetPage> {
 
                                   try {
                                     if (existing != null) {
-                                      // ✅ FIX: include 'period' in update payload
                                       await supabase
                                           .from('budgets')
                                           .update({
                                             'category': finalCategory,
                                             'budget_limit': limit,
                                             'period': period.toLowerCase(),
+                                            'is_completed': false,
                                           })
                                           .eq(
                                             'id',
@@ -1484,15 +2346,13 @@ class _BudgetPageState extends State<BudgetPage> {
                                                   'limit': limit,
                                                   'period': period,
                                                   'emoji': resolvedEmoji,
+                                                  'isCompleted': false,
                                                 },
                                               );
                                             }
                                           });
                                     } else {
-                                      // Capture creation time so the budget
-                                      // starts with zero spending
                                       final now = DateTime.now();
-                                      // ✅ FIX: include 'period' in insert payload
                                       final response = await supabase
                                           .from('budgets')
                                           .insert({
@@ -1501,13 +2361,12 @@ class _BudgetPageState extends State<BudgetPage> {
                                             'budget_limit': limit,
                                             'period': period.toLowerCase(),
                                             'created_at': now.toIso8601String(),
+                                            'is_completed': false,
                                           })
                                           .select();
 
                                       if (!ctx.mounted) return;
                                       if ((response as List).isNotEmpty) {
-                                        // Use the server-returned created_at
-                                        // so the cutoff is precise
                                         final serverCreatedAt =
                                             response[0]['created_at'] != null
                                             ? DateTime.parse(
@@ -1526,6 +2385,7 @@ class _BudgetPageState extends State<BudgetPage> {
                                                   'period': period,
                                                   'emoji': resolvedEmoji,
                                                   'createdAt': serverCreatedAt,
+                                                  'isCompleted': false,
                                                 });
                                               }
                                             });
