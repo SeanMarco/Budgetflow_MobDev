@@ -255,6 +255,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           'id': bud['id'].toString(),
           'category': bud['category'] as String,
           'limit': (bud['budget_limit'] as num).toDouble(),
+          // ── FIX: read persisted period instead of hardcoding 'Monthly' ──
+          'period': bud['period'] as String? ?? 'Monthly',
           'createdAt': bud['created_at'] != null
               ? DateTime.parse(bud['created_at'] as String)
               : DateTime(2000),
@@ -3244,86 +3246,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               ),
             ],
           ),
-
-          if (topCats.isNotEmpty) ...[
-            const SizedBox(height: 24),
-            _sectionHeader('Top Spending', isDark),
-            const SizedBox(height: 12),
-            ...topCats.map((e) {
-              final pct = totalExpense > 0 ? e.value / totalExpense : 0.0;
-              final color = TxCategories.colorFor(e.key);
-              return Container(
-                margin: const EdgeInsets.only(bottom: 10),
-                padding: const EdgeInsets.all(16),
-                decoration: _card(isDark),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          width: 38,
-                          height: 38,
-                          decoration: BoxDecoration(
-                            color: color.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(11),
-                          ),
-                          alignment: Alignment.center,
-                          child: Text(
-                            TxCategories.emojiFor(e.key),
-                            style: const TextStyle(fontSize: 17),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            e.key,
-                            style: TextStyle(
-                              fontFamily: 'Poppins',
-                              fontWeight: FontWeight.w600,
-                              fontSize: 13,
-                              color: _primaryText(isDark),
-                            ),
-                          ),
-                        ),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              currency.format(e.value),
-                              style: TextStyle(
-                                fontFamily: 'Poppins',
-                                fontWeight: FontWeight.w700,
-                                fontSize: 13,
-                                color: color,
-                              ),
-                            ),
-                            Text(
-                              '${(pct * 100).toStringAsFixed(1)}%',
-                              style: TextStyle(
-                                fontFamily: 'Poppins',
-                                fontSize: 10,
-                                color: _tertiaryText(isDark),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(5),
-                      child: LinearProgressIndicator(
-                        value: pct.clamp(0.0, 1.0),
-                        backgroundColor: color.withOpacity(0.1),
-                        valueColor: AlwaysStoppedAnimation<Color>(color),
-                        minHeight: 5,
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }),
-          ],
 
           const SizedBox(height: 24),
           _sectionHeader('Features', isDark),

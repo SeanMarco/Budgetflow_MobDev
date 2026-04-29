@@ -176,6 +176,205 @@ class _AccountsPageState extends State<AccountsPage> {
     }
   }
 
+  Future<void> _addMoneyToAccount(Map<String, dynamic> account) async {
+    final amountCtrl = TextEditingController();
+    bool isProcessing = false;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) {
+        return StatefulBuilder(
+          builder: (ctx, setS) {
+            return Container(
+              decoration: BoxDecoration(
+                color: isDark ? BF.darkCard : Colors.white,
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(28),
+                ),
+              ),
+              padding: EdgeInsets.only(
+                left: 24,
+                right: 24,
+                top: 20,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 28,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _handle(isDark),
+                  const SizedBox(height: 20),
+                  Row(
+                    children: [
+                      Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: BF.green.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Center(
+                          child: Text(
+                            account['emoji'] as String? ?? '💰',
+                            style: const TextStyle(fontSize: 24),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Add Money to',
+                              style: TextStyle(
+                                fontFamily: 'Poppins',
+                                fontSize: 12,
+                                color: isDark ? Colors.white54 : Colors.black54,
+                              ),
+                            ),
+                            Text(
+                              account['name'] as String,
+                              style: TextStyle(
+                                fontFamily: 'Poppins',
+                                fontWeight: FontWeight.w700,
+                                fontSize: 18,
+                                color: isDark ? Colors.white : Colors.black87,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  _field(
+                    amountCtrl,
+                    'Amount to Add',
+                    isDark,
+                    prefix: '₱ ',
+                    type: const TextInputType.numberWithOptions(decimal: true),
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: BF.green,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 15),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        textStyle: const TextStyle(
+                          fontFamily: 'Poppins',
+                          fontWeight: FontWeight.w600,
+                          fontSize: 15,
+                        ),
+                      ),
+                      onPressed: isProcessing
+                          ? null
+                          : () async {
+                              final amount =
+                                  double.tryParse(amountCtrl.text.trim()) ?? 0;
+                              if (amount <= 0) {
+                                ScaffoldMessenger.of(ctx).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Please enter a valid amount',
+                                    ),
+                                    backgroundColor: BF.red,
+                                  ),
+                                );
+                                return;
+                              }
+
+                              setS(() => isProcessing = true);
+
+                              try {
+                                final accountIdInt = int.tryParse(
+                                  account['id'].toString(),
+                                );
+                                if (accountIdInt == null)
+                                  throw Exception('Invalid account ID');
+
+                                final currentBalance =
+                                    account['balance'] as double;
+                                final newBalance = currentBalance + amount;
+
+                                // Update account balance
+                                await supabase
+                                    .from('accounts')
+                                    .update({'balance': newBalance})
+                                    .eq('id', accountIdInt);
+
+                                // Add transaction record
+                                final now = DateTime.now().toIso8601String();
+                                await supabase.from('transactions').insert({
+                                  'user_id': _userId,
+                                  'title': 'Added funds to ${account['name']}',
+                                  'amount': amount,
+                                  'is_income': true,
+                                  'category': 'Savings',
+                                  'account_id': accountIdInt,
+                                  'note': 'Manual top-up',
+                                  'date': now,
+                                });
+
+                                // Refresh local state
+                                await _refreshAccounts();
+
+                                if (ctx.mounted) {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Money added successfully!',
+                                      ),
+                                      backgroundColor: BF.green,
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                  Navigator.pop(ctx);
+                                }
+                              } catch (e) {
+                                if (ctx.mounted) {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                    SnackBar(
+                                      content: Text('Error: $e'),
+                                      backgroundColor: BF.red,
+                                    ),
+                                  );
+                                }
+                              } finally {
+                                if (ctx.mounted)
+                                  setS(() => isProcessing = false);
+                              }
+                            },
+                      child: isProcessing
+                          ? const SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : const Text('Add Money'),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -319,10 +518,10 @@ class _AccountsPageState extends State<AccountsPage> {
       _accountColors[index % _accountColors.length],
     );
     final balance = account['balance'] as double;
-
     final hasTransactions = _appState.transactions.any(
       (tx) => tx['accountId'].toString() == account['id'].toString(),
     );
+    final canDelete = balance == 0 && !hasTransactions;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -393,24 +592,72 @@ class _AccountsPageState extends State<AccountsPage> {
                   color: balance >= 0 ? BF.green : BF.red,
                 ),
               ),
-              if (!hasTransactions) ...[
-                const SizedBox(height: 4),
-                GestureDetector(
-                  onTap: () => _deleteAccount(account['id'].toString()),
-                  child: Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: BoxDecoration(
-                      color: BF.red.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: const Icon(
-                      Icons.delete_outline_rounded,
-                      size: 15,
-                      color: BF.red,
+              const SizedBox(height: 6),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Add Money Button (always visible)
+                  GestureDetector(
+                    onTap: () => _addMoneyToAccount(account),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: BF.green.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: BF.green.withOpacity(0.3),
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.add_rounded,
+                            size: 14,
+                            color: BF.green,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Add',
+                            style: TextStyle(
+                              fontFamily: 'Poppins',
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: BF.green,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-              ],
+                  const SizedBox(width: 8),
+                  // Delete Button (only if balance is 0 and no transactions)
+                  if (canDelete)
+                    GestureDetector(
+                      onTap: () => _deleteAccount(account['id'].toString()),
+                      child: Container(
+                        padding: const EdgeInsets.all(5),
+                        decoration: BoxDecoration(
+                          color: BF.red.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: BF.red.withOpacity(0.3),
+                            width: 1,
+                          ),
+                        ),
+                        child: const Icon(
+                          Icons.delete_outline_rounded,
+                          size: 14,
+                          color: BF.red,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ],
           ),
         ],
@@ -564,7 +811,7 @@ class _AccountsPageState extends State<AccountsPage> {
                         ),
                       ),
                       const SizedBox(height: 14),
-                      _field(nameCtrl, 'Account name', isDark),
+                      _field(nameCtrl, 'Account name', isDark, maxLength: 16),
                       const SizedBox(height: 12),
                       _field(
                         balanceCtrl,
@@ -1032,26 +1279,28 @@ class _AccountsPageState extends State<AccountsPage> {
 
                                   final now = DateTime.now().toIso8601String();
 
-                                  // For FROM account - use a special category "Transfer-Out"
+                                  // For FROM account - mark as transfer (is_transfer = true)
                                   await supabase.from('transactions').insert({
                                     'user_id': _userId,
                                     'title': 'Transfer to ${toAccount['name']}',
                                     'amount': amount,
                                     'is_income': false,
-                                    'category': 'Transfer-Out',
+                                    'is_transfer': true, // Mark as transfer
+                                    'category': 'Transfer',
                                     'account_id': fromIdInt,
                                     'note': 'Transfer to ${toAccount['name']}',
                                     'date': now,
                                   });
 
-                                  // For TO account - use a special category "Transfer-In"
+                                  // For TO account - mark as transfer (is_transfer = true)
                                   await supabase.from('transactions').insert({
                                     'user_id': _userId,
                                     'title':
                                         'Transfer from ${fromAccount['name']}',
                                     'amount': amount,
                                     'is_income': true,
-                                    'category': 'Transfer-In',
+                                    'is_transfer': true, // Mark as transfer
+                                    'category': 'Transfer',
                                     'account_id': toIdInt,
                                     'note':
                                         'Transfer from ${fromAccount['name']}',
@@ -1098,6 +1347,8 @@ class _AccountsPageState extends State<AccountsPage> {
                                         'amount': (tx['amount'] as num)
                                             .toDouble(),
                                         'isIncome': tx['is_income'] as bool,
+                                        'isTransfer':
+                                            tx['is_transfer'] as bool? ?? false,
                                         'category':
                                             tx['category'] as String? ??
                                             'General',
@@ -1234,9 +1485,12 @@ class _AccountsPageState extends State<AccountsPage> {
                     style: const TextStyle(fontSize: 16),
                   ),
                   const SizedBox(width: 8),
-                  Text(
-                    a['name'] as String,
-                    style: const TextStyle(fontFamily: 'Poppins'),
+                  Expanded(
+                    child: Text(
+                      a['name'] as String,
+                      style: const TextStyle(fontFamily: 'Poppins'),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),
@@ -1254,10 +1508,12 @@ class _AccountsPageState extends State<AccountsPage> {
     bool isDark, {
     String? prefix,
     TextInputType? type,
+    int? maxLength,
   }) {
     return TextField(
       controller: ctrl,
       keyboardType: type,
+      maxLength: maxLength,
       style: TextStyle(
         fontFamily: 'Poppins',
         fontSize: 14,
@@ -1266,6 +1522,7 @@ class _AccountsPageState extends State<AccountsPage> {
       decoration: InputDecoration(
         labelText: label,
         prefixText: prefix,
+        counterText: maxLength != null ? null : '',
         prefixStyle: TextStyle(
           fontFamily: 'Poppins',
           color: isDark ? Colors.white54 : Colors.black45,

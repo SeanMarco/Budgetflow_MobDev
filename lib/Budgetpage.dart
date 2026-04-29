@@ -42,6 +42,13 @@ class _BudgetPageState extends State<BudgetPage> {
     super.dispose();
   }
 
+  // ── Normalises DB values like "weekly"/"monthly" → "Weekly"/"Monthly"
+  // so they match the period toggle labels in the sheet.
+  String _normalisePeriod(String raw) {
+    if (raw.isEmpty) return 'Monthly';
+    return raw[0].toUpperCase() + raw.substring(1).toLowerCase();
+  }
+
   Future<void> _loadBudgets() async {
     if (!mounted) return;
     setState(() => _isLoading = true);
@@ -59,7 +66,8 @@ class _BudgetPageState extends State<BudgetPage> {
           'id': budget['id'].toString(),
           'category': budget['category'] as String,
           'limit': (budget['budget_limit'] as num).toDouble(),
-          'period': 'Monthly',
+          // ✅ FIX: read from DB; normalise capitalisation; fall back to 'Monthly'
+          'period': _normalisePeriod(budget['period'] as String? ?? 'Monthly'),
           'emoji': _getEmojiForCategory(budget['category'] as String),
           'createdAt': budget['created_at'] != null
               ? DateTime.parse(budget['created_at'] as String)
@@ -726,6 +734,7 @@ class _BudgetPageState extends State<BudgetPage> {
                         color: isDark ? Colors.white : Colors.black87,
                       ),
                     ),
+                    // ✅ FIX: now shows the actual period read from DB
                     Text(
                       budget['period'] as String? ?? 'Monthly',
                       style: TextStyle(
@@ -1101,6 +1110,7 @@ class _BudgetPageState extends State<BudgetPage> {
     );
     final customCategoryCtrl = TextEditingController();
 
+    // ✅ FIX: seed period from the existing budget's persisted value
     String period = existing?['period'] as String? ?? 'Monthly';
     String selectedCategory = existing?['category'] as String? ?? '';
     bool isCustomCategory =
@@ -1449,11 +1459,13 @@ class _BudgetPageState extends State<BudgetPage> {
 
                                   try {
                                     if (existing != null) {
+                                      // ✅ FIX: include 'period' in update payload
                                       await supabase
                                           .from('budgets')
                                           .update({
                                             'category': finalCategory,
                                             'budget_limit': limit,
+                                            'period': period.toLowerCase(),
                                           })
                                           .eq(
                                             'id',
@@ -1480,12 +1492,14 @@ class _BudgetPageState extends State<BudgetPage> {
                                       // Capture creation time so the budget
                                       // starts with zero spending
                                       final now = DateTime.now();
+                                      // ✅ FIX: include 'period' in insert payload
                                       final response = await supabase
                                           .from('budgets')
                                           .insert({
                                             'user_id': _userId,
                                             'category': finalCategory,
                                             'budget_limit': limit,
+                                            'period': period.toLowerCase(),
                                             'created_at': now.toIso8601String(),
                                           })
                                           .select();
