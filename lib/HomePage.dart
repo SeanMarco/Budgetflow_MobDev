@@ -545,6 +545,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   List<Map<String, dynamic>> get _filteredTxs {
     return _s.transactions.where((tx) {
+      final isTransfer = tx['isTransfer'] as bool? ?? false;
+
+      // Exclude transfers when filtering by Income or Expense
+      if (_filterType == 'Income' && isTransfer) return false;
+      if (_filterType == 'Expense' && isTransfer) return false;
+
       if (_searchQuery.isNotEmpty) {
         final q = _searchQuery.toLowerCase();
         final titleMatch = (tx['title'] as String).toLowerCase().contains(q);
