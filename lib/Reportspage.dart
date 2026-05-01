@@ -72,7 +72,6 @@ class _ReportsPageState extends State<ReportsPage>
           'type': acc['type'] as String,
           'emoji': acc['emoji'] as String? ?? '💰',
           'balance': (acc['balance'] as num).toDouble(),
-          // FIXED: consistent String type for color
           'color': acc['color'] as String? ?? '#0EA974',
         });
       }
@@ -98,7 +97,6 @@ class _ReportsPageState extends State<ReportsPage>
         _s.budgets.add({
           'id': bud['id'].toString(),
           'category': bud['category'] as String,
-          // FIXED: column name is `budget_limit`
           'limit': (bud['budget_limit'] as num).toDouble(),
         });
       }
@@ -132,7 +130,6 @@ class _ReportsPageState extends State<ReportsPage>
         );
       }
     } finally {
-      // FIXED: Guard setState with mounted check
       if (mounted) setState(() => _isRefreshing = false);
     }
   }
@@ -150,7 +147,6 @@ class _ReportsPageState extends State<ReportsPage>
         case 'This Month':
           return d.month == now.month && d.year == now.year;
         case 'Last Month':
-          // FIXED: Correctly handle January → December of previous year
           final lastMonthDate = DateTime(now.year, now.month - 1);
           return d.month == lastMonthDate.month && d.year == lastMonthDate.year;
         case 'All Time':
@@ -321,7 +317,6 @@ class _ReportsPageState extends State<ReportsPage>
       return _emptyData(isDark, 'No transactions for this period');
     }
 
-    // FIXED: PieChart dataMap must not be empty — guard with if checks
     final Map<String, double> pieData = {};
     if (income > 0) pieData['Income'] = income;
     if (expense > 0) pieData['Expense'] = expense;
@@ -354,13 +349,18 @@ class _ReportsPageState extends State<ReportsPage>
               chartType: ChartType.ring,
               ringStrokeWidth: 24,
               chartRadius: 130,
-              chartValuesOptions: const ChartValuesOptions(
+              // ── FIX: labels rendered outside the ring so they are visible ──
+              chartValuesOptions: ChartValuesOptions(
+                showChartValues: true,
                 showChartValuesInPercentage: true,
+                showChartValuesOutside: true,
+                decimalPlaces: 1,
+                chartValueBackgroundColor: Colors.transparent,
                 chartValueStyle: TextStyle(
                   fontFamily: 'Poppins',
                   fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
+                  fontWeight: FontWeight.w700,
+                  color: isDark ? Colors.white : Colors.black87,
                 ),
               ),
               legendOptions: LegendOptions(
@@ -476,19 +476,23 @@ class _ReportsPageState extends State<ReportsPage>
                 ),
                 const SizedBox(height: 16),
                 PieChart(
-                  // FIXED: Use Map.fromEntries so dataMap is always non-empty
-                  // when this block renders (guarded by `if (total > 0)`)
                   dataMap: Map.fromEntries(sorted),
                   chartType: ChartType.ring,
                   ringStrokeWidth: 20,
                   chartRadius: 120,
                   colorList: colors,
-                  chartValuesOptions: const ChartValuesOptions(
+                  // ── FIX: labels rendered outside the ring so they are visible ──
+                  chartValuesOptions: ChartValuesOptions(
+                    showChartValues: true,
                     showChartValuesInPercentage: true,
+                    showChartValuesOutside: true,
+                    decimalPlaces: 1,
+                    chartValueBackgroundColor: Colors.transparent,
                     chartValueStyle: TextStyle(
                       fontFamily: 'Poppins',
                       fontSize: 11,
-                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                      color: isDark ? Colors.white : Colors.black87,
                     ),
                   ),
                   legendOptions: LegendOptions(
@@ -569,57 +573,80 @@ class _ReportsPageState extends State<ReportsPage>
               ),
               const SizedBox(height: 18),
               SizedBox(
-                height: 180,
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: keys.map((key) {
-                    final inc = incByDay[key] ?? 0.0;
-                    final exp = expByDay[key] ?? 0.0;
-                    return Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 3),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            if (inc > 0)
-                              Container(
-                                height: maxVal > 0
-                                    ? (inc / maxVal * 120).clamp(4.0, 120.0)
-                                    : 0,
-                                decoration: BoxDecoration(
-                                  color: BF.green,
-                                  borderRadius: const BorderRadius.vertical(
-                                    top: Radius.circular(5),
-                                  ),
-                                ),
+                height: 220,
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: keys.map((key) {
+                          final inc = incByDay[key] ?? 0.0;
+                          final exp = expByDay[key] ?? 0.0;
+                          return Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 3,
                               ),
-                            const SizedBox(height: 2),
-                            if (exp > 0)
-                              Container(
-                                height: maxVal > 0
-                                    ? (exp / maxVal * 120).clamp(4.0, 120.0)
-                                    : 0,
-                                decoration: BoxDecoration(
-                                  color: BF.red,
-                                  borderRadius: const BorderRadius.vertical(
-                                    top: Radius.circular(5),
-                                  ),
-                                ),
-                              ),
-                            const SizedBox(height: 8),
-                            Text(
-                              key,
-                              style: TextStyle(
-                                fontSize: 9,
-                                fontFamily: 'Poppins',
-                                color: isDark ? Colors.white38 : Colors.black38,
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  if (inc > 0)
+                                    Container(
+                                      height: maxVal > 0
+                                          ? (inc / maxVal * 120).clamp(
+                                              4.0,
+                                              120.0,
+                                            )
+                                          : 0,
+                                      decoration: BoxDecoration(
+                                        color: BF.green,
+                                        borderRadius:
+                                            const BorderRadius.vertical(
+                                              top: Radius.circular(5),
+                                            ),
+                                      ),
+                                    ),
+                                  const SizedBox(height: 2),
+                                  if (exp > 0)
+                                    Container(
+                                      height: maxVal > 0
+                                          ? (exp / maxVal * 120).clamp(
+                                              4.0,
+                                              120.0,
+                                            )
+                                          : 0,
+                                      decoration: BoxDecoration(
+                                        color: BF.red,
+                                        borderRadius:
+                                            const BorderRadius.vertical(
+                                              top: Radius.circular(5),
+                                            ),
+                                      ),
+                                    ),
+                                ],
                               ),
                             ),
-                          ],
-                        ),
+                          );
+                        }).toList(),
                       ),
-                    );
-                  }).toList(),
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: keys.map((key) {
+                        return Expanded(
+                          child: Text(
+                            key,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontFamily: 'Poppins',
+                              color: isDark ? Colors.white38 : Colors.black38,
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 14),
