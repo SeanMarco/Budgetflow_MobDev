@@ -67,6 +67,9 @@ class _SavingsPageState extends State<SavingsPage> {
           'deadline': goal['deadline'] != null
               ? DateTime.parse(goal['deadline'] as String)
               : null,
+          'completed_at': goal['completed_at'] != null
+              ? DateTime.parse(goal['completed_at'] as String)
+              : null,
         });
       }
     } catch (e) {
@@ -91,7 +94,16 @@ class _SavingsPageState extends State<SavingsPage> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final goals = _appState.savingsGoals;
+    final allGoals = _appState.savingsGoals;
+
+    // Separate active and completed goals
+    final activeGoals = allGoals
+        .where((g) => (g['saved'] as double) < (g['target'] as double))
+        .toList();
+
+    final completedGoals = allGoals
+        .where((g) => (g['saved'] as double) >= (g['target'] as double))
+        .toList();
 
     if (_isLoading) {
       return Scaffold(
@@ -104,7 +116,7 @@ class _SavingsPageState extends State<SavingsPage> {
     return Scaffold(
       backgroundColor: isDark ? BF.darkBg : BF.lightBg,
       appBar: _appBar(isDark),
-      body: goals.isEmpty
+      body: allGoals.isEmpty
           ? _emptyView(isDark)
           : RefreshIndicator(
               color: BF.accent,
@@ -112,18 +124,36 @@ class _SavingsPageState extends State<SavingsPage> {
               child: ListView(
                 padding: const EdgeInsets.all(20),
                 children: [
-                  _banner(goals, isDark),
+                  _banner(allGoals, isDark),
                   const SizedBox(height: 22),
-                  _sectionLabel('Your Goals', isDark),
-                  const SizedBox(height: 12),
-                  ...goals.asMap().entries.map(
-                    (e) => _goalCard(e.value, e.key, isDark),
-                  ),
+
+                  // Active Goals Section
+                  if (activeGoals.isNotEmpty) ...[
+                    _sectionLabel('Active Goals', isDark),
+                    const SizedBox(height: 12),
+                    ...activeGoals.asMap().entries.map(
+                      (e) => _goalCard(e.value, e.key, isDark),
+                    ),
+                    const SizedBox(height: 22),
+                  ],
+
+                  // Completed Goals Section
+                  if (completedGoals.isNotEmpty) ...[
+                    _sectionLabel('Completed Goals ✨', isDark),
+                    const SizedBox(height: 12),
+                    ...completedGoals.asMap().entries.map(
+                      (e) => _completedGoalCard(e.value, e.key, isDark),
+                    ),
+                    const SizedBox(height: 22),
+                  ],
+
                   const SizedBox(height: 80),
                 ],
               ),
             ),
-      floatingActionButton: _fab(isDark),
+      floatingActionButton: activeGoals.isNotEmpty || completedGoals.isEmpty
+          ? _fab(isDark)
+          : null,
     );
   }
 
@@ -371,27 +401,7 @@ class _SavingsPageState extends State<SavingsPage> {
                   ],
                 ),
               ),
-              if (isCompleted)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 5,
-                  ),
-                  decoration: BoxDecoration(
-                    color: BF.green.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: const Text(
-                    '✓ Done',
-                    style: TextStyle(
-                      fontFamily: 'Poppins',
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: BF.green,
-                    ),
-                  ),
-                )
-              else
+              if (!isCompleted)
                 PopupMenuButton<String>(
                   color: isDark ? BF.darkCard : Colors.white,
                   icon: Icon(
@@ -481,6 +491,173 @@ class _SavingsPageState extends State<SavingsPage> {
               valueColor: AlwaysStoppedAnimation<Color>(
                 isCompleted ? BF.green : color,
               ),
+              minHeight: 10,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _completedGoalCard(Map<String, dynamic> goal, int index, bool isDark) {
+    final saved = goal['saved'] as double;
+    final target = goal['target'] as double;
+    final completedDate = goal['completed_at'] != null
+        ? (goal['completed_at'] as DateTime)
+        : DateTime.now();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: isDark ? BF.darkCard : Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: BF.green.withOpacity(0.3), width: 1.5),
+        boxShadow: isDark
+            ? []
+            : [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 12,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 50,
+                height: 50,
+                decoration: BoxDecoration(
+                  color: BF.green.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(15),
+                ),
+                child: Center(
+                  child: Text(
+                    goal['emoji'] as String? ?? '🎯',
+                    style: const TextStyle(fontSize: 24),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      goal['title'] as String,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontFamily: 'Poppins',
+                        fontSize: 15,
+                        color: isDark ? Colors.white : Colors.black87,
+                        decoration: TextDecoration.lineThrough,
+                        decorationColor: BF.green,
+                        decorationThickness: 2,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Completed ${DateFormat('MMM dd, yyyy').format(completedDate)}',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontFamily: 'Poppins',
+                        color: BF.green,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 5,
+                ),
+                decoration: BoxDecoration(
+                  color: BF.green.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.check_circle_rounded,
+                      color: BF.green,
+                      size: 14,
+                    ),
+                    const SizedBox(width: 4),
+                    const Text(
+                      '✓ Done',
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: BF.green,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    currency.format(saved),
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontFamily: 'Poppins',
+                      fontSize: 22,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
+                  ),
+                  Text(
+                    'of ${currency.format(target)} saved',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontFamily: 'Poppins',
+                      color: isDark ? Colors.white38 : Colors.black45,
+                    ),
+                  ),
+                ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: BF.green.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  'Goal Achieved! 🎉',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontFamily: 'Poppins',
+                    fontSize: 12,
+                    color: BF.green,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: LinearProgressIndicator(
+              value: 1.0,
+              backgroundColor: BF.green.withOpacity(0.1),
+              valueColor: const AlwaysStoppedAnimation<Color>(BF.green),
               minHeight: 10,
             ),
           ),
@@ -623,7 +800,6 @@ class _SavingsPageState extends State<SavingsPage> {
     ),
   );
 
-  // Add Funds Sheet - FIXED VERSION
   void _showAddFundsSheet(Map<String, dynamic> goal, bool isDark) {
     final ctrl = TextEditingController();
     bool isSaving = false;
@@ -740,12 +916,26 @@ class _SavingsPageState extends State<SavingsPage> {
                                 setS(() => isSaving = true);
 
                                 try {
-                                  final newSaved =
-                                      (goal['saved'] as double) + amt;
+                                  final oldSaved = goal['saved'] as double;
+                                  final newSaved = oldSaved + amt;
+                                  final isCompleted =
+                                      newSaved >= goal['target'];
+
+                                  // Prepare update data
+                                  Map<String, dynamic> updateData = {
+                                    'saved': newSaved,
+                                  };
+
+                                  // If goal becomes completed, add completion timestamp
+                                  if (isCompleted &&
+                                      oldSaved < goal['target']) {
+                                    updateData['completed_at'] = DateTime.now()
+                                        .toIso8601String();
+                                  }
 
                                   await supabase
                                       .from('savings_goals')
-                                      .update({'saved': newSaved})
+                                      .update(updateData)
                                       .eq('id', int.parse(goal['id'] as String))
                                       .eq('user_id', _userId);
 
@@ -765,12 +955,16 @@ class _SavingsPageState extends State<SavingsPage> {
                                     ScaffoldMessenger.of(ctx).showSnackBar(
                                       SnackBar(
                                         content: Text(
-                                          'Added ${currency.format(amt)} to ${goal['title']}',
+                                          isCompleted
+                                              ? '🎉 Congratulations! You completed "${goal['title']}"!'
+                                              : 'Added ${currency.format(amt)} to ${goal['title']}',
                                           style: const TextStyle(
                                             fontFamily: 'Poppins',
                                           ),
                                         ),
-                                        backgroundColor: BF.green,
+                                        backgroundColor: isCompleted
+                                            ? BF.green
+                                            : BF.accent,
                                         behavior: SnackBarBehavior.floating,
                                       ),
                                     );
@@ -823,7 +1017,6 @@ class _SavingsPageState extends State<SavingsPage> {
     });
   }
 
-  // New Goal Sheet - FIXED VERSION
   void _showSheet(bool isDark) {
     final titleCtrl = TextEditingController();
     final targetCtrl = TextEditingController();
@@ -1050,6 +1243,8 @@ class _SavingsPageState extends State<SavingsPage> {
                                         ) ??
                                         0.0;
 
+                                    final isCompleted = saved >= target;
+
                                     final response = await supabase
                                         .from('savings_goals')
                                         .insert({
@@ -1060,6 +1255,9 @@ class _SavingsPageState extends State<SavingsPage> {
                                           'saved': saved,
                                           'deadline': deadline
                                               ?.toIso8601String(),
+                                          'completed_at': isCompleted
+                                              ? DateTime.now().toIso8601String()
+                                              : null,
                                         })
                                         .select();
 
@@ -1078,16 +1276,21 @@ class _SavingsPageState extends State<SavingsPage> {
                                                 'saved': saved,
                                                 'emoji': emoji,
                                                 'deadline': deadline,
+                                                'completed_at': isCompleted
+                                                    ? DateTime.now()
+                                                    : null,
                                               });
                                             }
                                           });
 
                                       if (ctx.mounted) {
                                         ScaffoldMessenger.of(ctx).showSnackBar(
-                                          const SnackBar(
+                                          SnackBar(
                                             content: Text(
-                                              'Goal created successfully',
-                                              style: TextStyle(
+                                              isCompleted
+                                                  ? 'Goal created as completed! 🎉'
+                                                  : 'Goal created successfully',
+                                              style: const TextStyle(
                                                 fontFamily: 'Poppins',
                                               ),
                                             ),
@@ -1146,7 +1349,6 @@ class _SavingsPageState extends State<SavingsPage> {
     });
   }
 
-  // Shared small widgets
   Widget _handle(bool isDark) => Center(
     child: Container(
       width: 40,

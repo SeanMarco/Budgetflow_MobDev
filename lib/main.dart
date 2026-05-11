@@ -736,9 +736,31 @@ class _AuthPageState extends State<AuthPage> with TickerProviderStateMixin {
     child: GestureDetector(
       onTap: () {
         if (!mounted) return;
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const HomePage(username: 'User')),
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Row(
+              children: [
+                Icon(Icons.access_time_rounded, color: BF.teal, size: 16),
+                SizedBox(width: 10),
+                Text(
+                  'Coming soon!',
+                  style: TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 13,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: BF.darkCard,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: BorderSide(color: BF.teal.withOpacity(0.3), width: 1),
+            ),
+            margin: const EdgeInsets.all(16),
+            duration: const Duration(seconds: 2),
+          ),
         );
       },
       child: Container(

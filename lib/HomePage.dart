@@ -11,8 +11,6 @@ import 'ReportsPage.dart';
 import 'RecurringPage.dart';
 import 'AccountsPage.dart';
 import 'SavingsPage.dart';
-import 'dart:typed_data';
-import 'package:flutter/foundation.dart' show kIsWeb;
 
 SupabaseClient get supabase => Supabase.instance.client;
 
@@ -175,7 +173,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     setState(() => _loading = true);
     final s = AppStateScope.of(context);
     try {
-      // Process recurring transactions first
       await _processRecurringTransactions();
 
       final accountsResponse = await supabase
@@ -255,11 +252,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           'id': bud['id'].toString(),
           'category': bud['category'] as String,
           'limit': (bud['budget_limit'] as num).toDouble(),
-          // ── FIX: read persisted period instead of hardcoding 'Monthly' ──
           'period': bud['period'] as String? ?? 'Monthly',
           'createdAt': bud['created_at'] != null
               ? DateTime.parse(bud['created_at'] as String)
               : DateTime(2000),
+          'isCompleted': bud['is_completed'] as bool? ?? false,
         });
       }
 
@@ -317,7 +314,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     final today = DateTime(now.year, now.month, now.day);
 
     try {
-      // Fetch all active recurring transactions that are due
       final due = await supabase
           .from('recurring_transactions')
           .select()
@@ -336,7 +332,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         final frequency = item['frequency'] as String;
         final nextDate = DateTime.parse(item['next_date'] as String);
 
-        // Find the account — use first account as default
         if (s.accounts.isEmpty) continue;
         final account = s.accounts.first;
         final accountIdInt = int.tryParse(account['id'].toString());
@@ -347,7 +342,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             ? currentBalance + amount
             : currentBalance - amount;
 
-        // 1. Insert the transaction
         await supabase.from('transactions').insert({
           'user_id': _userId,
           'title': title,
@@ -359,13 +353,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           'date': now.toIso8601String(),
         });
 
-        // 2. Update account balance
         await supabase
             .from('accounts')
             .update({'balance': newBalance})
             .eq('id', accountIdInt);
 
-        // 3. Advance next_date based on frequency
         final DateTime advancedDate = _advanceDate(nextDate, frequency);
 
         await supabase
@@ -390,7 +382,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         return DateTime(from.year + 1, from.month, from.day);
       case 'Monthly':
       default:
-        // Handle month overflow (e.g. Jan 31 → Feb 28)
         final nextMonth = from.month == 12 ? 1 : from.month + 1;
         final nextYear = from.month == 12 ? from.year + 1 : from.year;
         final lastDayOfNextMonth = DateTime(nextYear, nextMonth + 1, 0).day;
@@ -546,20 +537,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   List<Map<String, dynamic>> get _filteredTxs {
     return _s.transactions.where((tx) {
       final isTransfer = tx['isTransfer'] as bool? ?? false;
-
-      // Exclude transfers when filtering by Income or Expense
       if (_filterType == 'Income' && isTransfer) return false;
       if (_filterType == 'Expense' && isTransfer) return false;
-
       if (_searchQuery.isNotEmpty) {
         final q = _searchQuery.toLowerCase();
         final titleMatch = (tx['title'] as String).toLowerCase().contains(q);
         final catMatch = (tx['category'] as String).toLowerCase().contains(q);
         if (!titleMatch && !catMatch) return false;
       }
-      if (_filterCategory != 'All' && tx['category'] != _filterCategory) {
+      if (_filterCategory != 'All' && tx['category'] != _filterCategory)
         return false;
-      }
       if (_filterType == 'Income' && !(tx['isIncome'] as bool)) return false;
       if (_filterType == 'Expense' && (tx['isIncome'] as bool)) return false;
       if (_filterDateRange != null) {
@@ -617,6 +604,44 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       } catch (_) {}
     }
     return fallback;
+  }
+
+  List<Map<String, dynamic>> get _dashboardActiveBudgets {
+    final now = DateTime.now();
+    return _s.budgets.where((b) {
+      final isCompleted = b['isCompleted'] as bool? ?? false;
+      if (isCompleted) return false;
+      final category = b['category'] as String;
+      final limit = b['limit'] as double;
+      final createdAt = b['createdAt'] as DateTime? ?? DateTime(2000);
+      final spent = _s.transactions
+          .where(
+            (tx) =>
+                tx['category'] == category &&
+                !(tx['isIncome'] as bool) &&
+                (tx['date'] as DateTime).isAfter(createdAt) &&
+                (tx['date'] as DateTime).month == now.month &&
+                (tx['date'] as DateTime).year == now.year,
+          )
+          .fold(0.0, (s, tx) => s + (tx['amount'] as double));
+      return spent < limit;
+    }).toList();
+  }
+
+  double _getSpentForBudget(Map<String, dynamic> budget) {
+    final now = DateTime.now();
+    final category = budget['category'] as String;
+    final createdAt = budget['createdAt'] as DateTime? ?? DateTime(2000);
+    return _s.transactions
+        .where(
+          (tx) =>
+              tx['category'] == category &&
+              !(tx['isIncome'] as bool) &&
+              (tx['date'] as DateTime).isAfter(createdAt) &&
+              (tx['date'] as DateTime).month == now.month &&
+              (tx['date'] as DateTime).year == now.year,
+        )
+        .fold(0.0, (s, tx) => s + (tx['amount'] as double));
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -688,7 +713,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ── FAB ───────────────────────────────────────────────────────────────────
   Widget _fab() => Container(
     decoration: BoxDecoration(
       borderRadius: BorderRadius.circular(18),
@@ -709,7 +733,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     ),
   );
 
-  // ── BOTTOM NAV BAR ────────────────────────────────────────────────────────
   Widget _navBar(bool isDark) {
     final items = [
       {'icon': Icons.home_rounded, 'label': 'Home'},
@@ -1280,6 +1303,86 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                               );
                               return;
                             }
+
+                            // ── GUARD: block expense if account has insufficient funds ─
+                            if (!isIncome) {
+                              final selectedAcc = appState.accounts.firstWhere(
+                                (a) => a['id'].toString() == localAccountId,
+                                orElse: () => {},
+                              );
+                              if (selectedAcc.isNotEmpty) {
+                                final bal = selectedAcc['balance'] as double;
+                                if (amount > bal) {
+                                  showDialog(
+                                    context: ctx,
+                                    builder: (dCtx) => AlertDialog(
+                                      backgroundColor: isDark
+                                          ? BF.darkCard
+                                          : Colors.white,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      title: Row(
+                                        children: [
+                                          Container(
+                                            width: 36,
+                                            height: 36,
+                                            decoration: BoxDecoration(
+                                              color: BF.red.withOpacity(0.1),
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                            ),
+                                            child: const Icon(
+                                              Icons.warning_amber_rounded,
+                                              color: BF.red,
+                                              size: 20,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 12),
+                                          const Expanded(
+                                            child: Text(
+                                              'Insufficient Balance',
+                                              style: TextStyle(
+                                                fontFamily: 'Poppins',
+                                                fontWeight: FontWeight.w700,
+                                                fontSize: 16,
+                                                color: BF.red,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      content: Text(
+                                        '${selectedAcc['name']} only has ${currency.format(bal)}.\n\nYou cannot spend ${currency.format(amount)}.',
+                                        style: TextStyle(
+                                          fontFamily: 'Poppins',
+                                          fontSize: 13,
+                                          color: isDark
+                                              ? Colors.white60
+                                              : const Color(0xFF64748B),
+                                        ),
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(dCtx),
+                                          child: const Text(
+                                            'Got it',
+                                            style: TextStyle(
+                                              fontFamily: 'Poppins',
+                                              fontWeight: FontWeight.w700,
+                                              color: BF.accent,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                  return;
+                                }
+                              }
+                            }
+                            // ── END GUARD ─────────────────────────────────
+
                             final finalCategory =
                                 (selectedCategory == 'Others' ||
                                     isCustomCategory)
@@ -1484,7 +1587,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // DASHBOARD — clean financial layout
+  // DASHBOARD
   // ══════════════════════════════════════════════════════════════════════════
   Widget _dashboard() {
     final isDark = _isDarkMode;
@@ -1499,25 +1602,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Top header bar ────────────────────────────────────────────
             _dashboardHeader(isDark),
-
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const SizedBox(height: 20),
-
-                  // ── Balance hero card ──────────────────────────────────
                   _balanceCard(isDark, monthStats),
                   const SizedBox(height: 20),
-
-                  // ── Month income / expense pills ───────────────────────
                   _monthFlowRow(isDark, monthStats),
                   const SizedBox(height: 24),
-
-                  // ── Wallets horizontal scroll ──────────────────────────
                   if (_s.accounts.isNotEmpty) ...[
                     _sectionHeader(
                       'Accounts',
@@ -1539,10 +1634,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     ),
                     const SizedBox(height: 24),
                   ],
-
-                  // ── Budget progress section ────────────────────────────
-
-                  // ── Savings goals ──────────────────────────────────────
+                  _dashboardBudgetSection(isDark),
                   if (_s.savingsGoals.isNotEmpty) ...[
                     _sectionHeader(
                       'Savings Goals',
@@ -1558,12 +1650,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         .map((g) => _savingsGoalRow(g, isDark)),
                     const SizedBox(height: 24),
                   ],
-
-                  // ── Navigation shortcuts ───────────────────────────────
                   _featureRow(isDark),
                   const SizedBox(height: 24),
-
-                  // ── Recent transactions ────────────────────────────────
                   _sectionHeader(
                     'Recent Transactions',
                     isDark,
@@ -1594,7 +1682,282 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ── Top greeting bar ──────────────────────────────────────────────────────
+  Widget _dashboardBudgetSection(bool isDark) {
+    final activeBudgets = _dashboardActiveBudgets;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionHeader(
+          'Active Budgets',
+          isDark,
+          action: _seeAllBtn(
+            'Manage',
+            () => _pushAndReload(const BudgetPage()),
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (activeBudgets.isEmpty)
+          _budgetEmptyState(isDark)
+        else
+          Column(
+            children: [
+              ...activeBudgets
+                  .take(2)
+                  .map((b) => _dashboardBudgetCard(b, isDark)),
+            ],
+          ),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
+  Widget _budgetEmptyState(bool isDark) {
+    return GestureDetector(
+      onTap: () => _pushAndReload(const BudgetPage()),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 20),
+        decoration: BoxDecoration(
+          color: _cardBg(isDark),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: BF.accent.withOpacity(0.18),
+            width: 1,
+            style: BorderStyle.solid,
+          ),
+          boxShadow: isDark
+              ? []
+              : [
+                  BoxShadow(
+                    color: const Color(0xFF64748B).withOpacity(0.06),
+                    blurRadius: 16,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: BF.accent.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(13),
+              ),
+              child: const Icon(
+                Icons.wallet_rounded,
+                color: BF.accent,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'No active budgets',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                      color: _primaryText(isDark),
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Tap to set spending limits by category',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 11,
+                      color: _tertiaryText(isDark),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                color: BF.accent.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.add_rounded, color: BF.accent, size: 16),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _dashboardBudgetCard(Map<String, dynamic> budget, bool isDark) {
+    final category = budget['category'] as String;
+    final limit = budget['limit'] as double;
+    final spent = _getSpentForBudget(budget);
+    final remaining = limit - spent;
+    final progress = limit > 0 ? (spent / limit).clamp(0.0, 1.0) : 0.0;
+    final isNear = progress >= 0.8 && progress < 1.0;
+    final Color barColor = isNear ? BF.amber : BF.green;
+    final catColor = TxCategories.colorFor(category);
+    final catEmoji = TxCategories.emojiFor(category);
+
+    return GestureDetector(
+      onTap: () => _pushAndReload(const BudgetPage()),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: _cardBg(isDark),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isNear ? BF.amber.withOpacity(0.3) : _border(isDark),
+            width: isNear ? 1.5 : 1,
+          ),
+          boxShadow: isDark
+              ? []
+              : [
+                  BoxShadow(
+                    color: const Color(0xFF64748B).withOpacity(0.06),
+                    blurRadius: 16,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+        ),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: catColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(catEmoji, style: const TextStyle(fontSize: 18)),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        category,
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                          color: _primaryText(isDark),
+                        ),
+                      ),
+                      Text(
+                        budget['period'] as String? ?? 'Monthly',
+                        style: TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 10,
+                          color: _tertiaryText(isDark),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      '${(progress * 100).toStringAsFixed(0)}%',
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15,
+                        color: barColor,
+                      ),
+                    ),
+                    Text(
+                      '${currency.format(remaining)} left',
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        color: remaining >= 0 ? BF.green : BF.red,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: LinearProgressIndicator(
+                value: progress,
+                backgroundColor: barColor.withOpacity(0.1),
+                valueColor: AlwaysStoppedAnimation<Color>(barColor),
+                minHeight: 6,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Spent: ${currency.format(spent)}',
+                  style: TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 10,
+                    color: _secondaryText(isDark),
+                  ),
+                ),
+                if (isNear)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: BF.amber.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.warning_amber_rounded,
+                          size: 10,
+                          color: BF.amber,
+                        ),
+                        const SizedBox(width: 3),
+                        Text(
+                          'Near limit',
+                          style: TextStyle(
+                            fontFamily: 'Poppins',
+                            fontSize: 9,
+                            fontWeight: FontWeight.w600,
+                            color: BF.amber,
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  Text(
+                    'Limit: ${currency.format(limit)}',
+                    style: TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 10,
+                      color: _tertiaryText(isDark),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _dashboardHeader(bool isDark) {
     final firstName = widget.username.isNotEmpty
         ? widget.username.split(' ')[0]
@@ -1664,7 +2027,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ── Balance hero card ─────────────────────────────────────────────────────
   Widget _balanceCard(bool isDark, Map<String, double> monthStats) {
     final net = monthStats['income']! - monthStats['expense']!;
     final isPositive = net >= 0;
@@ -1816,7 +2178,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ── Monthly income / expense row ──────────────────────────────────────────
   Widget _monthFlowRow(bool isDark, Map<String, double> monthStats) {
     final month = DateFormat('MMM').format(DateTime.now());
     return Row(
@@ -1900,7 +2261,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ── Account pill ──────────────────────────────────────────────────────────
   Widget _accountPill(Map<String, dynamic> acc, bool isDark) {
     final Color baseColor = _parseColor(acc['color'], BF.accent);
     final balance = acc['balance'] as double;
@@ -2007,125 +2367,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ── Budget progress list ──────────────────────────────────────────────────
-  // ── Budget progress list (only show ACTIVE budgets, hide completed) ──────
-  // ── Budget progress list (HIDE completed budgets completely) ──────────────
-  Widget _budgetProgressList(bool isDark) {
-    final now = DateTime.now();
-    // ✅ CRITICAL: Only show budgets that are NOT completed
-    final activeBudgets = _s.budgets
-        .where((b) => (b['isCompleted'] as bool? ?? false) == false)
-        .take(3)
-        .toList();
-
-    // If no active budgets, show nothing (or a small message)
-    if (activeBudgets.isEmpty) {
-      return const SizedBox.shrink(); // Completely hide the section
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: _card(isDark),
-      child: Column(
-        children: activeBudgets.asMap().entries.map((entry) {
-          final i = entry.key;
-          final b = entry.value;
-          final category = b['category'] as String;
-          final limit = b['limit'] as double;
-          final createdAt = b['createdAt'] as DateTime? ?? DateTime(2000);
-          final spent = _s.transactions
-              .where(
-                (tx) =>
-                    tx['category'] == category &&
-                    !(tx['isIncome'] as bool) &&
-                    (tx['date'] as DateTime).isAfter(createdAt) &&
-                    (tx['date'] as DateTime).month == now.month &&
-                    (tx['date'] as DateTime).year == now.year,
-              )
-              .fold(0.0, (s, tx) => s + (tx['amount'] as double));
-          final progress = limit > 0 ? (spent / limit).clamp(0.0, 1.0) : 0.0;
-          final isNear = progress >= 0.8 && progress < 1.0;
-          final barColor = isNear ? BF.amber : BF.green;
-
-          return Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
-                ),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        Text(
-                          TxCategories.emojiFor(category),
-                          style: const TextStyle(fontSize: 16),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                category,
-                                style: TextStyle(
-                                  fontFamily: 'Poppins',
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: _primaryText(isDark),
-                                ),
-                              ),
-                              Text(
-                                '${currency.format(spent)} of ${currency.format(limit)}',
-                                style: TextStyle(
-                                  fontFamily: 'Poppins',
-                                  fontSize: 11,
-                                  color: _secondaryText(isDark),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Text(
-                          '${(progress * 100).toStringAsFixed(0)}%',
-                          style: TextStyle(
-                            fontFamily: 'Poppins',
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: barColor,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(6),
-                      child: LinearProgressIndicator(
-                        value: progress,
-                        backgroundColor: barColor.withOpacity(0.1),
-                        valueColor: AlwaysStoppedAnimation<Color>(barColor),
-                        minHeight: 5,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (i < activeBudgets.length - 1)
-                Divider(
-                  height: 1,
-                  color: _border(isDark),
-                  indent: 16,
-                  endIndent: 16,
-                ),
-            ],
-          );
-        }).toList(),
-      ),
-    );
-  }
-
-  // ── Savings goal row ──────────────────────────────────────────────────────
   Widget _savingsGoalRow(Map<String, dynamic> g, bool isDark) {
     final saved = g['saved'] as double;
     final target = g['target'] as double;
@@ -2214,7 +2455,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ── Feature row (compact nav links) ───────────────────────────────────────
   Widget _featureRow(bool isDark) {
     final features = [
       {
@@ -2258,7 +2498,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           decoration: _card(isDark),
           child: Row(
             children: features.asMap().entries.map((entry) {
-              final i = entry.key;
               final f = entry.value;
               final color = f['color'] as Color;
               return Expanded(
@@ -2551,10 +2790,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     final isIncome = tx['isIncome'] as bool;
     final id = tx['id'].toString();
     final runningBalance = tx['runningBalance'] as double;
-    final acc = _s.accounts.firstWhere(
-      (a) => a['id'].toString() == tx['accountId'].toString(),
-      orElse: () => {'name': '', 'emoji': ''},
-    );
     final catColor = TxCategories.colorFor(tx['category'] as String);
     final catEmoji = TxCategories.emojiFor(tx['category'] as String);
 
@@ -2724,28 +2959,24 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           ),
                         ),
                         const SizedBox(height: 3),
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 7,
-                                vertical: 2,
-                              ),
-                              decoration: BoxDecoration(
-                                color: catColor.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: Text(
-                                tx['category'] as String,
-                                style: TextStyle(
-                                  fontFamily: 'Poppins',
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w600,
-                                  color: catColor,
-                                ),
-                              ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: catColor.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            tx['category'] as String,
+                            style: TextStyle(
+                              fontFamily: 'Poppins',
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: catColor,
                             ),
-                          ],
+                          ),
                         ),
                         const SizedBox(height: 3),
                         Text(
@@ -2921,21 +3152,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     final goalCount = _s.savingsGoals.length;
     final accCount = _s.accounts.length;
 
-    final Map<String, double> catMap = {};
-    for (final tx in _s.transactions.where((t) => !(t['isIncome'] as bool))) {
-      final c = tx['category'] as String;
-      catMap[c] = (catMap[c] ?? 0) + (tx['amount'] as double);
-    }
-    final topCats =
-        (catMap.entries.toList()..sort((a, b) => b.value.compareTo(a.value)))
-            .take(3)
-            .toList();
-
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 100),
       child: Column(
         children: [
-          // ── Profile card ────────────────────────────────────────────────
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(28),
@@ -3097,10 +3317,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               ],
             ),
           ),
-
           const SizedBox(height: 16),
-
-          // ── Net worth / savings rate ──────────────────────────────────
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
@@ -3196,9 +3413,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               ],
             ),
           ),
-
           const SizedBox(height: 12),
-
           Row(
             children: [
               Expanded(
@@ -3246,7 +3461,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               ),
             ],
           ),
-
           const SizedBox(height: 24),
           _sectionHeader('Features', isDark),
           const SizedBox(height: 12),
@@ -3285,9 +3499,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             const Color(0xFF8B5CF6),
             () => _pushAndReload(const SavingsPage()),
           ),
-
           const SizedBox(height: 24),
-
           GestureDetector(
             onTap: () async {
               await _clearSessionData();
@@ -3329,7 +3541,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // ── Shared small widgets ──────────────────────────────────────────────────
   Widget _profileStat(String value, String label) => Column(
     children: [
       Text(

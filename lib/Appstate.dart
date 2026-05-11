@@ -204,9 +204,11 @@ class AppState extends ChangeNotifier {
     if (_isDisposed) return;
     final idx = savingsGoals.indexWhere((g) => g['id'] == id);
     if (idx >= 0) {
-      final updated = Map<String, dynamic>.from(savingsGoals[idx]);
-      updated['saved'] = (updated['saved'] as double) + amount;
-      savingsGoals[idx] = updated;
+      // Update the existing map in place - DO NOT replace it
+      final goal = savingsGoals[idx];
+      goal['saved'] = (goal['saved'] as double) + amount;
+      // IMPORTANT: Do NOT create a new map or reassign savingsGoals[idx]
+      // Just update the existing map directly
     }
     _safeNotify();
   }
