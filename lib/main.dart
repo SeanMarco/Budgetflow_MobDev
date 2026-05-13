@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:device_preview/device_preview.dart';
+// import 'package:device_preview/device_preview.dart';
 import 'AppState.dart';
 import 'HomePage.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -111,30 +111,22 @@ class BudgetFlowApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DevicePreview(
-      enabled: true,
-      builder: (context) {
-        return ValueListenableBuilder<bool>(
-          valueListenable: isDarkMode,
-          builder: (context, bool darkMode, _) {
-            return AppStateScope(
-              state: _appState,
-              child: MaterialApp(
-                debugShowCheckedModeBanner: false,
-                useInheritedMediaQuery: true,
-                locale: DevicePreview.locale(context),
-                builder: DevicePreview.appBuilder,
-                themeMode: darkMode ? ThemeMode.dark : ThemeMode.light,
-                theme: _buildTheme(Brightness.light),
-                darkTheme: _buildTheme(Brightness.dark),
-                initialRoute: '/auth',
-                routes: {
-                  '/auth': (context) => const AuthPage(),
-                  '/settings': (context) => const SettingsPage(),
-                },
-              ),
-            );
-          },
+    return ValueListenableBuilder<bool>(
+      valueListenable: isDarkMode,
+      builder: (context, bool darkMode, _) {
+        return AppStateScope(
+          state: _appState,
+          child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            themeMode: darkMode ? ThemeMode.dark : ThemeMode.light,
+            theme: _buildTheme(Brightness.light),
+            darkTheme: _buildTheme(Brightness.dark),
+            initialRoute: '/auth',
+            routes: {
+              '/auth': (context) => const AuthPage(),
+              '/settings': (context) => const SettingsPage(),
+            },
+          ),
         );
       },
     );

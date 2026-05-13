@@ -221,14 +221,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             'balance': 0.0,
             'color': '#0EA974',
           },
-          {
-            'user_id': _userId,
-            'name': 'Savings',
-            'type': 'Savings',
-            'emoji': '🏦',
-            'balance': 0.0,
-            'color': '#7B61FF',
-          },
         ]).select();
         if (!mounted) return;
         for (final acc in (newAccounts as List)) {

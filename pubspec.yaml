@@ -31,8 +31,6 @@ dependencies:
   flutter:
     sdk: flutter
 
-  device_frame: ^1.1.0
-  device_preview: ^1.1.0
   http: ^1.1.0
   pie_chart: ^5.4.0       # For the pie chart
   confetti: ^0.8.0        # For confetti animation
