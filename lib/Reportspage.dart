@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:pie_chart/pie_chart.dart';
-// FIXED: Removed duplicate `final supabase = Supabase.instance.client;`
-// Import supabase from main.dart to avoid duplicate-global-variable warnings.
 import 'main.dart' show BF, supabase;
 import 'AppState.dart';
 
@@ -20,14 +18,17 @@ class _ReportsPageState extends State<ReportsPage>
   final _periods = ['This Week', 'This Month', 'Last Month', 'All Time'];
   bool _isRefreshing = false;
 
-  AppState get _s => AppStateScope.of(context);
+  // Comparison sub-mode: 'Weekly', 'Monthly', 'Yearly'
+  String _compareMode = 'Monthly';
+  final _compareModes = ['Weekly', 'Monthly', 'Yearly'];
 
+  AppState get _s => AppStateScope.of(context);
   String get _userId => supabase.auth.currentUser?.id ?? '';
 
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 3, vsync: this);
+    _tab = TabController(length: 4, vsync: this);
   }
 
   @override
@@ -44,18 +45,15 @@ class _ReportsPageState extends State<ReportsPage>
           .from('accounts')
           .select()
           .eq('user_id', _userId);
-
       final transactionsResponse = await supabase
           .from('transactions')
           .select()
           .eq('user_id', _userId)
           .order('date', ascending: false);
-
       final budgetsResponse = await supabase
           .from('budgets')
           .select()
           .eq('user_id', _userId);
-
       final savingsResponse = await supabase
           .from('savings_goals')
           .select()
@@ -63,7 +61,6 @@ class _ReportsPageState extends State<ReportsPage>
 
       if (!mounted) return;
 
-      // ── Accounts ──────────────────────────────────────────────────────────
       _s.accounts.clear();
       for (final acc in (accountsResponse as List)) {
         _s.accounts.add({
@@ -76,7 +73,6 @@ class _ReportsPageState extends State<ReportsPage>
         });
       }
 
-      // ── Transactions ──────────────────────────────────────────────────────
       _s.transactions.clear();
       for (final tx in (transactionsResponse as List)) {
         _s.transactions.add({
@@ -91,7 +87,6 @@ class _ReportsPageState extends State<ReportsPage>
         });
       }
 
-      // ── Budgets ───────────────────────────────────────────────────────────
       _s.budgets.clear();
       for (final bud in (budgetsResponse as List)) {
         _s.budgets.add({
@@ -101,7 +96,6 @@ class _ReportsPageState extends State<ReportsPage>
         });
       }
 
-      // ── Savings Goals ─────────────────────────────────────────────────────
       _s.savingsGoals.clear();
       for (final goal in (savingsResponse as List)) {
         _s.savingsGoals.add({
@@ -160,7 +154,6 @@ class _ReportsPageState extends State<ReportsPage>
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return Scaffold(
       backgroundColor: isDark ? BF.darkBg : BF.lightBg,
       appBar: _appBar(isDark),
@@ -181,6 +174,7 @@ class _ReportsPageState extends State<ReportsPage>
                         _overviewTab(isDark),
                         _categoriesTab(isDark),
                         _trendsTab(isDark),
+                        _comparisonTab(isDark),
                       ],
                     ),
                   ),
@@ -279,11 +273,11 @@ class _ReportsPageState extends State<ReportsPage>
         labelStyle: const TextStyle(
           fontFamily: 'Poppins',
           fontWeight: FontWeight.w600,
-          fontSize: 13,
+          fontSize: 12,
         ),
         unselectedLabelStyle: const TextStyle(
           fontFamily: 'Poppins',
-          fontSize: 13,
+          fontSize: 12,
         ),
         labelColor: Colors.white,
         unselectedLabelColor: isDark ? Colors.white54 : Colors.black45,
@@ -297,12 +291,13 @@ class _ReportsPageState extends State<ReportsPage>
           Tab(text: 'Overview'),
           Tab(text: 'Categories'),
           Tab(text: 'Trends'),
+          Tab(text: 'Compare'),
         ],
       ),
     );
   }
 
-  // ── Overview Tab ────────────────────────────────────────────────────────────
+  // ── Overview Tab ──────────────────────────────────────────────────────────
   Widget _overviewTab(bool isDark) {
     final txs = _filtered;
     final income = txs
@@ -349,7 +344,6 @@ class _ReportsPageState extends State<ReportsPage>
               chartType: ChartType.ring,
               ringStrokeWidth: 24,
               chartRadius: 130,
-              // ── FIX: labels rendered outside the ring so they are visible ──
               chartValuesOptions: ChartValuesOptions(
                 showChartValues: true,
                 showChartValuesInPercentage: true,
@@ -429,7 +423,7 @@ class _ReportsPageState extends State<ReportsPage>
     );
   }
 
-  // ── Categories Tab ──────────────────────────────────────────────────────────
+  // ── Categories Tab ────────────────────────────────────────────────────────
   Widget _categoriesTab(bool isDark) {
     final txs = _filtered.where((t) => !(t['isIncome'] as bool)).toList();
     final Map<String, double> catMap = {};
@@ -481,7 +475,6 @@ class _ReportsPageState extends State<ReportsPage>
                   ringStrokeWidth: 20,
                   chartRadius: 120,
                   colorList: colors,
-                  // ── FIX: labels rendered outside the ring so they are visible ──
                   chartValuesOptions: ChartValuesOptions(
                     showChartValues: true,
                     showChartValuesInPercentage: true,
@@ -526,7 +519,7 @@ class _ReportsPageState extends State<ReportsPage>
     );
   }
 
-  // ── Trends Tab ──────────────────────────────────────────────────────────────
+  // ── Trends Tab ────────────────────────────────────────────────────────────
   Widget _trendsTab(bool isDark) {
     final txs = _filtered;
     final Map<String, double> incByDay = {};
@@ -706,7 +699,597 @@ class _ReportsPageState extends State<ReportsPage>
     );
   }
 
-  // ── Insight helpers ─────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // ── COMPARISON TAB ────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /// Groups ALL transactions by a key function and returns a map of
+  /// { label -> { 'income': double, 'expense': double } }
+  Map<String, Map<String, double>> _groupBy(String Function(DateTime) keyFn) {
+    final result = <String, Map<String, double>>{};
+    for (final tx in _s.transactions) {
+      final key = keyFn(tx['date'] as DateTime);
+      result.putIfAbsent(key, () => {'income': 0.0, 'expense': 0.0});
+      if (tx['isIncome'] as bool) {
+        result[key]!['income'] =
+            result[key]!['income']! + (tx['amount'] as double);
+      } else {
+        result[key]!['expense'] =
+            result[key]!['expense']! + (tx['amount'] as double);
+      }
+    }
+    return result;
+  }
+
+  /// Returns ISO week number for a DateTime.
+  int _isoWeek(DateTime d) {
+    final dayOfYear = int.parse(DateFormat('D').format(d));
+    final wday = d.weekday;
+    return ((dayOfYear - wday + 10) / 7).floor();
+  }
+
+  Map<String, Map<String, double>> get _comparisonData {
+    switch (_compareMode) {
+      case 'Weekly':
+        return _groupBy((d) {
+          final week = _isoWeek(d);
+          return '${d.year}-W${week.toString().padLeft(2, '0')}';
+        });
+      case 'Monthly':
+        return _groupBy((d) => DateFormat('MMM yyyy').format(d));
+      case 'Yearly':
+        return _groupBy((d) => d.year.toString());
+      default:
+        return {};
+    }
+  }
+
+  Widget _comparisonTab(bool isDark) {
+    final data = _comparisonData;
+    final sortedKeys = data.keys.toList()..sort();
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+      children: [
+        // ── Mode selector ────────────────────────────────────────────────
+        Container(
+          decoration: BoxDecoration(
+            color: isDark ? BF.darkSurface : Colors.black.withOpacity(0.05),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          padding: const EdgeInsets.all(4),
+          child: Row(
+            children: _compareModes.map((m) {
+              final sel = m == _compareMode;
+              return Expanded(
+                child: GestureDetector(
+                  onTap: () => setState(() => _compareMode = m),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    padding: const EdgeInsets.symmetric(vertical: 9),
+                    decoration: BoxDecoration(
+                      color: sel ? BF.accent : Colors.transparent,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      m,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: sel
+                            ? Colors.white
+                            : (isDark ? Colors.white54 : Colors.black45),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+        const SizedBox(height: 16),
+
+        if (sortedKeys.isEmpty)
+          _emptyData(isDark, 'No data available for comparison')
+        else ...[
+          // ── Projection highlight cards ─────────────────────────────────
+          _projectionCards(sortedKeys, data, isDark),
+          const SizedBox(height: 16),
+
+          // ── Bar chart ─────────────────────────────────────────────────
+          _comparisonBarChart(sortedKeys, data, isDark),
+          const SizedBox(height: 16),
+
+          // ── Detail list ───────────────────────────────────────────────
+          Text(
+            '$_compareMode Breakdown',
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              fontFamily: 'Poppins',
+              fontSize: 16,
+              color: isDark ? Colors.white : Colors.black87,
+            ),
+          ),
+          const SizedBox(height: 12),
+          ...sortedKeys.reversed.map(
+            (k) => _comparisonRow(k, data[k]!, isDark, sortedKeys, data),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// 2 highlight cards: worst spending period + best saving period.
+  Widget _projectionCards(
+    List<String> keys,
+    Map<String, Map<String, double>> data,
+    bool isDark,
+  ) {
+    // Highest expense period
+    String worstKey = keys.first;
+    double worstExp = 0;
+    // Best saving period (highest net = income - expense)
+    String bestKey = keys.first;
+    double bestNet = double.negativeInfinity;
+
+    for (final k in keys) {
+      final exp = data[k]!['expense']!;
+      final inc = data[k]!['income']!;
+      final net = inc - exp;
+      if (exp > worstExp) {
+        worstExp = exp;
+        worstKey = k;
+      }
+      if (net > bestNet) {
+        bestNet = net;
+        bestKey = k;
+      }
+    }
+
+    // Projected: extrapolate current incomplete period if it is ongoing
+    final now = DateTime.now();
+    String? projectionNote;
+    String currentKey = '';
+    switch (_compareMode) {
+      case 'Weekly':
+        final week = _isoWeek(now);
+        currentKey = '${now.year}-W${week.toString().padLeft(2, '0')}';
+        break;
+      case 'Monthly':
+        currentKey = DateFormat('MMM yyyy').format(now);
+        break;
+      case 'Yearly':
+        currentKey = now.year.toString();
+        break;
+    }
+
+    if (data.containsKey(currentKey)) {
+      final daysElapsed = _daysElapsedInPeriod(now);
+      final daysTotal = _daysInPeriod(now);
+      if (daysElapsed > 0 && daysTotal > daysElapsed) {
+        final currentExp = data[currentKey]!['expense']!;
+        final projected = currentExp / daysElapsed * daysTotal;
+        projectionNote =
+            'Projected for current $_compareMode: ${currency.format(projected)}';
+      }
+    }
+
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: _highlightCard(
+                isDark,
+                icon: Icons.local_fire_department_rounded,
+                label: 'Most Expenses',
+                period: worstKey,
+                value: currency.format(worstExp),
+                color: BF.red,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _highlightCard(
+                isDark,
+                icon: Icons.savings_rounded,
+                label: 'Most Saved',
+                period: bestKey,
+                value: currency.format(bestNet < 0 ? 0 : bestNet),
+                color: BF.green,
+              ),
+            ),
+          ],
+        ),
+        if (projectionNote != null) ...[
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: BF.amber.withOpacity(0.10),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: BF.amber.withOpacity(0.3)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.auto_graph_rounded, color: BF.amber, size: 18),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    projectionNote,
+                    style: const TextStyle(
+                      fontFamily: 'Poppins',
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: BF.amber,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// How many days have elapsed so far in the current period (for projection).
+  int _daysElapsedInPeriod(DateTime now) {
+    switch (_compareMode) {
+      case 'Weekly':
+        return now.weekday; // 1 (Mon) … 7 (Sun)
+      case 'Monthly':
+        return now.day;
+      case 'Yearly':
+        return now.difference(DateTime(now.year, 1, 1)).inDays + 1;
+      default:
+        return 1;
+    }
+  }
+
+  /// Total days in the current period.
+  int _daysInPeriod(DateTime now) {
+    switch (_compareMode) {
+      case 'Weekly':
+        return 7;
+      case 'Monthly':
+        return DateUtils.getDaysInMonth(now.year, now.month);
+      case 'Yearly':
+        return (now.year % 4 == 0 &&
+                (now.year % 100 != 0 || now.year % 400 == 0))
+            ? 366
+            : 365;
+      default:
+        return 1;
+    }
+  }
+
+  Widget _highlightCard(
+    bool isDark, {
+    required IconData icon,
+    required String label,
+    required String period,
+    required String value,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: color, size: 18),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            label,
+            style: TextStyle(
+              fontFamily: 'Poppins',
+              fontSize: 11,
+              color: isDark ? Colors.white54 : Colors.black45,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            period,
+            style: TextStyle(
+              fontFamily: 'Poppins',
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: isDark ? Colors.white70 : Colors.black54,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: TextStyle(
+              fontFamily: 'Poppins',
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Grouped bar chart: income (green) + expense (red) side-by-side per period.
+  Widget _comparisonBarChart(
+    List<String> keys,
+    Map<String, Map<String, double>> data,
+    bool isDark,
+  ) {
+    final maxVal = keys
+        .expand((k) => [data[k]!['income']!, data[k]!['expense']!])
+        .fold(0.0, (a, b) => a > b ? a : b);
+
+    // Show at most 8 most recent periods to keep it readable
+    final displayKeys = keys.length > 8 ? keys.sublist(keys.length - 8) : keys;
+
+    return _infoCard(
+      isDark,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '$_compareMode Comparison',
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              fontFamily: 'Poppins',
+              fontSize: 16,
+              color: isDark ? Colors.white : Colors.black87,
+            ),
+          ),
+          const SizedBox(height: 18),
+          SizedBox(
+            height: 180,
+            child: Column(
+              children: [
+                Expanded(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: displayKeys.map((key) {
+                      final inc = data[key]!['income']!;
+                      final exp = data[key]!['expense']!;
+                      return Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 2),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              // Income bar
+                              Expanded(
+                                child: Container(
+                                  height: maxVal > 0
+                                      ? (inc / maxVal * 130).clamp(2.0, 130.0)
+                                      : 2,
+                                  decoration: BoxDecoration(
+                                    color: BF.green,
+                                    borderRadius: const BorderRadius.vertical(
+                                      top: Radius.circular(4),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 2),
+                              // Expense bar
+                              Expanded(
+                                child: Container(
+                                  height: maxVal > 0
+                                      ? (exp / maxVal * 130).clamp(2.0, 130.0)
+                                      : 2,
+                                  decoration: BoxDecoration(
+                                    color: BF.red,
+                                    borderRadius: const BorderRadius.vertical(
+                                      top: Radius.circular(4),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: displayKeys.map((key) {
+                    // Shorten label for space
+                    String label = key;
+                    if (_compareMode == 'Monthly' && key.length > 6) {
+                      label = key.substring(0, 3); // e.g. "Jan"
+                    } else if (_compareMode == 'Weekly') {
+                      label = key.contains('-W')
+                          ? 'W${key.split('-W').last}'
+                          : key;
+                    }
+                    return Expanded(
+                      child: Text(
+                        label,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 8,
+                          fontFamily: 'Poppins',
+                          color: isDark ? Colors.white38 : Colors.black38,
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _legend(BF.green, 'Income', isDark),
+              const SizedBox(width: 20),
+              _legend(BF.red, 'Expense', isDark),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One row per period in the detail list.
+  Widget _comparisonRow(
+    String key,
+    Map<String, double> d,
+    bool isDark,
+    List<String> allKeys,
+    Map<String, Map<String, double>> allData,
+  ) {
+    final inc = d['income']!;
+    final exp = d['expense']!;
+    final net = inc - exp;
+
+    // Find max expense for proportional bar
+    final maxExp = allKeys
+        .map((k) => allData[k]!['expense']!)
+        .fold(0.0, (a, b) => a > b ? a : b);
+
+    // Badge: is this the worst or best period?
+    final isWorst =
+        exp ==
+        allKeys
+            .map((k) => allData[k]!['expense']!)
+            .reduce((a, b) => a > b ? a : b);
+    final isBest =
+        net ==
+        allKeys
+            .map((k) => allData[k]!['income']! - allData[k]!['expense']!)
+            .reduce((a, b) => a > b ? a : b);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BF.card(isDark),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  key,
+                  style: TextStyle(
+                    fontFamily: 'Poppins',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                    color: isDark ? Colors.white : Colors.black87,
+                  ),
+                ),
+              ),
+              if (isWorst) _badge('Most Spent', BF.red, isDark),
+              if (isBest && !isWorst) ...[
+                if (isWorst) const SizedBox(width: 6),
+                _badge('Most Saved', BF.green, isDark),
+              ],
+              if (isBest && isWorst) _badge('Most Saved', BF.green, isDark),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              _miniStat('Income', inc, BF.green, isDark),
+              const SizedBox(width: 12),
+              _miniStat('Expense', exp, BF.red, isDark),
+              const SizedBox(width: 12),
+              _miniStat('Net', net, net >= 0 ? BF.green : BF.red, isDark),
+            ],
+          ),
+          const SizedBox(height: 10),
+          // Expense fill bar
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: LinearProgressIndicator(
+              value: maxExp > 0 ? (exp / maxExp).clamp(0.0, 1.0) : 0,
+              backgroundColor: BF.red.withOpacity(0.10),
+              valueColor: const AlwaysStoppedAnimation<Color>(BF.red),
+              minHeight: 5,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${maxExp > 0 ? ((exp / maxExp) * 100).toStringAsFixed(1) : 0}% of peak spending',
+            style: TextStyle(
+              fontFamily: 'Poppins',
+              fontSize: 10,
+              color: isDark ? Colors.white38 : Colors.black38,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _badge(String label, Color color, bool isDark) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+    decoration: BoxDecoration(
+      color: color.withOpacity(0.12),
+      borderRadius: BorderRadius.circular(20),
+    ),
+    child: Text(
+      label,
+      style: TextStyle(
+        fontFamily: 'Poppins',
+        fontSize: 10,
+        fontWeight: FontWeight.w600,
+        color: color,
+      ),
+    ),
+  );
+
+  Widget _miniStat(String label, double val, Color color, bool isDark) =>
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 10,
+                color: isDark ? Colors.white38 : Colors.black38,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              currency.format(val),
+              style: TextStyle(
+                fontFamily: 'Poppins',
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
+      );
+
+  // ── Insight helpers ───────────────────────────────────────────────────────
 
   String _getHighestDay(Map<String, double> data) {
     if (data.isEmpty) return 'No data';
@@ -719,7 +1302,6 @@ class _ReportsPageState extends State<ReportsPage>
     if (allKeys.isEmpty) return 'No data';
     String bestDay = '';
     double bestNet = double.negativeInfinity;
-
     for (final key in allKeys) {
       final net = (inc[key] ?? 0.0) - (exp[key] ?? 0.0);
       if (net > bestNet) {
@@ -732,7 +1314,7 @@ class _ReportsPageState extends State<ReportsPage>
         : 'No data';
   }
 
-  // ── Shared small widgets ────────────────────────────────────────────────────
+  // ── Shared small widgets ──────────────────────────────────────────────────
 
   Widget _insightRow(
     IconData icon,

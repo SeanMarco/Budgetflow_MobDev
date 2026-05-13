@@ -212,23 +212,33 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           });
         }
       } else {
-        final newAccount = await supabase.from('accounts').insert({
-          'user_id': _userId,
-          'name': 'Cash Wallet',
-          'type': 'Cash',
-          'emoji': '👛',
-          'balance': 0.0,
-          'color': '#0EA974',
-        }).select();
-        if (!mounted) return;
-        if ((newAccount as List).isNotEmpty) {
-          s.accounts.add({
-            'id': newAccount[0]['id'].toString(),
+        final newAccounts = await supabase.from('accounts').insert([
+          {
+            'user_id': _userId,
             'name': 'Cash Wallet',
             'type': 'Cash',
             'emoji': '👛',
             'balance': 0.0,
             'color': '#0EA974',
+          },
+          {
+            'user_id': _userId,
+            'name': 'Savings',
+            'type': 'Savings',
+            'emoji': '🏦',
+            'balance': 0.0,
+            'color': '#7B61FF',
+          },
+        ]).select();
+        if (!mounted) return;
+        for (final acc in (newAccounts as List)) {
+          s.accounts.add({
+            'id': acc['id'].toString(),
+            'name': acc['name'] as String,
+            'type': acc['type'] as String,
+            'emoji': acc['emoji'] as String,
+            'balance': 0.0,
+            'color': acc['color'] as String,
           });
         }
       }
@@ -1635,7 +1645,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     const SizedBox(height: 24),
                   ],
                   _dashboardBudgetSection(isDark),
-                  if (_s.savingsGoals.isNotEmpty) ...[
+                  if (_s.savingsGoals.where((g) {
+                    final saved = g['saved'] as double;
+                    final target = g['target'] as double;
+                    return target <= 0 || saved < target;
+                  }).isNotEmpty) ...[
                     _sectionHeader(
                       'Savings Goals',
                       isDark,
@@ -1646,6 +1660,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     ),
                     const SizedBox(height: 12),
                     ..._s.savingsGoals
+                        .where((g) {
+                          final saved = g['saved'] as double;
+                          final target = g['target'] as double;
+                          return target <= 0 || saved < target;
+                        })
                         .take(2)
                         .map((g) => _savingsGoalRow(g, isDark)),
                     const SizedBox(height: 24),
